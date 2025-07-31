@@ -1,0 +1,7 @@
+streamlit
+google-cloud-storage
+google-generativeai
+ffmpeg-python
+moviepy
+tenacity
+nest_asyncio
