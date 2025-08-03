@@ -1,22 +1,12 @@
 import streamlit as st
 import os
-import threading
-import asyncio
-import time # Added for sleep
+import time
+import requests
 from google.cloud import storage
-from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
-from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
-import google.generativeai as genai
-import subprocess # Added for ffprobe
-import tempfile # Added for potential temporary downloads
-import nest_asyncio
-import logging
 
-# Apply nest_asyncio once at the start of the script if needed globally
-# Or, ensure it's applied before any new event loop is started by asyncio.run() in a thread.
-# For simplicity here, it's in batch_process_metadata_threaded, but consider moving if it causes issues.
+# Define the base URL for the backend API
+API_BASE_URL = "http://127.0.0.1:8000"
 
-# --- Your prompt_text variable (this is now the DEFAULT TEMPLATE) ---
 # It's good to define it here so render_tab2 can use it as a default
 # for st.session_state.batch_prompt_text_area_content
 default_prompt_template = """
@@ -88,521 +78,186 @@ Provide your response as a single, valid JSON array. Each element in the array s
     *Is all property enclosed with double quote (")
 """
 
-# --- Helper function to get video duration ---
-def get_video_duration_ffmpeg(video_path: str) -> str:
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", video_path,
-            ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True,
-        )
-        duration_seconds = float(result.stdout.strip())
-        if duration_seconds < 0: duration_seconds = 0
-        hours = int(duration_seconds // 3600)
-        minutes = int((duration_seconds % 3600) // 60)
-        seconds = int(duration_seconds % 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    except FileNotFoundError:
-        st.error("`ffprobe` command not found. Ensure FFmpeg is installed and in PATH.")
-        # Log this error as well, as st.error might not be visible from a thread without context
-        print("ERROR: `ffprobe` command not found.")
-        raise # Re-raise to be caught by the caller if needed
-    except subprocess.CalledProcessError as e:
-        print(f"Error getting duration for {video_path} with ffprobe. stderr: {e.stderr}")
-        return "00:00:00"
-    except ValueError as e:
-        print(f"Error parsing ffprobe duration output for {video_path}: {e}. Output: '{result.stdout.strip() if 'result' in locals() else 'N/A'}'")
-        return "00:00:00"
-    except Exception as e:
-        print(f"Unexpected error getting duration for {video_path}: {e}")
-        return "00:00:00"
-
-# Configure logger for tenacity
-logger = logging.getLogger(__name__)
-# Ensure logging is configured to show warnings for tenacity retries
-if not logger.handlers: # Avoid adding multiple handlers if re-running script parts
-    logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
-
-
-@retry(
-    wait=wait_exponential(multiplier=1, min=2, max=60),
-    stop=stop_after_attempt(3),
-    before_sleep=before_sleep_log(logger, logging.WARNING) # Use tenacity's built-in logger
-)
-async def call_gemini_api_async(gcs_video_uri: str, prompt_text_for_api: str, gemini_api_key: str, video_filename_key: str, ai_model_name: str): # Added ai_model_name
-    # ... (call_gemini_api_async content is mostly fine, ensure it uses prompt_text_for_api)
-    st.session_state.batch_processed_files[video_filename_key] = f"Processing: {video_filename_key}"
-    st.session_state.live_streaming_outputs[video_filename_key] = "Processing..."
-    try:
-        if not gemini_api_key:
-            raise ValueError("GEMINI_API_KEY not provided.")
-        # genai.configure should be handled by app.py or get_model.py globally
-        # If re-configuration per call is needed, it can be done, but usually not necessary if key doesn't change
-        # genai.configure(api_key=gemini_api_key)
-        model_instance = genai.GenerativeModel(model_name=ai_model_name) # Use passed model name
-        st.session_state.live_streaming_outputs[video_filename_key] = f"Preparing video from GCS: {video_filename_key}..."
-        contents_for_api = [gcs_video_uri, prompt_text_for_api] # Use the passed, formatted prompt
-        generation_config = genai.types.GenerationConfig(temperature=1.0, top_p=1.0, max_output_tokens=8192)
-        safety_settings = [
-            {"category": genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": genai.types.HarmBlockThreshold.BLOCK_NONE},
-            {"category": genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": genai.types.HarmBlockThreshold.BLOCK_NONE},
-            {"category": genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": genai.types.HarmBlockThreshold.BLOCK_NONE},
-            {"category": genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": genai.types.HarmBlockThreshold.BLOCK_NONE},
-        ]
-        tools = None
-        st.session_state.live_streaming_outputs[video_filename_key] = f"Starting analysis for {video_filename_key}..."
-        print(f"[DEBUG call_gemini_api_async] Calling generate_content_async for {video_filename_key} with model {model_instance.model_name}")
-        # For debugging the exact prompt sent:
-        # print(f"--- PROMPT FOR {video_filename_key} ---\n{prompt_text_for_api}\n----------------------------")
-
-        response = await model_instance.generate_content_async(
-            contents=contents_for_api, generation_config=generation_config, safety_settings=safety_settings, tools=tools
-        )
-        full_response_text = ""
-        if hasattr(response, 'text') and response.text:
-            full_response_text = response.text
-        elif response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-            for part_item in response.candidates[0].content.parts:
-                 if hasattr(part_item, 'text'): full_response_text += part_item.text
-        elif response.parts:
-            for part_item in response.parts:
-                if hasattr(part_item, 'text'): full_response_text += part_item.text
-
-        if not full_response_text and response.prompt_feedback:
-            block_reason = getattr(response.prompt_feedback, 'block_reason', None)
-            if block_reason:
-                reason_message = block_reason.name
-                if hasattr(response.prompt_feedback, 'block_reason_message') and response.prompt_feedback.block_reason_message:
-                    reason_message = f"{reason_message} ({response.prompt_feedback.block_reason_message})"
-                error_msg = f"Content generation blocked for '{video_filename_key}'. Reason: {reason_message}"
-                st.session_state.batch_processed_files[video_filename_key] = f"Error: {error_msg}"
-                st.session_state.live_streaming_outputs[video_filename_key] = f"--- ERROR ---\n{error_msg}"
-                print(f"[DEBUG call_gemini_api_async] Content blocked: {video_filename_key}, Reason: {reason_message}")
-                return
-        st.session_state.batch_processed_files[video_filename_key] = f"Processed: {video_filename_key} ({len(full_response_text)} chars) (Pending Save)"
-        st.session_state.live_streaming_outputs[video_filename_key] = full_response_text
-        print(f"[DEBUG call_gemini_api_async] Successfully processed: {video_filename_key}, Response length: {len(full_response_text)}")
-    except Exception as e:
-        error_msg = f"Gemini API error for '{video_filename_key}': {type(e).__name__} - {e}"
-        st.session_state.batch_processed_files[video_filename_key] = f"Error: {error_msg}"
-        st.session_state.live_streaming_outputs[video_filename_key] = f"--- API ERROR ---\n{error_msg}"
-        raise
-
-
-def batch_process_metadata_threaded(
-    parent_ctx, selected_gcs_video_uris, 
-    # This is the template from the UI's text_area
-    ui_edited_prompt_template_text: str,
-    metadata_output_dir, gemini_api_key_for_batch,
-    ai_model_name_for_batch: str, # Added
-    concurrent_api_calls_limit, gcs_bucket_name_for_upload,
-    gcs_output_metadata_prefix_for_batch: str # Added
-):
-    if parent_ctx:
-        add_script_run_ctx(threading.current_thread(), parent_ctx)
-    
-    nest_asyncio.apply()
-
-    st.session_state.is_batch_processing = True
-    # Initialize file statuses in session_state (done in render_tab2 before thread start, but good to confirm)
-    # for gcs_uri in selected_gcs_video_uris:
-    #     fn_key = os.path.basename(gcs_uri)
-    #     if fn_key not in st.session_state.batch_processed_files: # Avoid overwriting if already processing
-    #         st.session_state.batch_processed_files[fn_key] = f"Queued: {fn_key}"
-    #         st.session_state.live_streaming_outputs[fn_key] = "Queued..."
-    # st.session_state.batch_processing_errors = [] # Should be reset in render_tab2
-    # st.session_state.batch_progress_value = 0
-    # st.session_state.batch_progress_text = "Initializing batch processing..."
-    # No st.rerun() needed here immediately
-
-    total_files = len(selected_gcs_video_uris)
-    os.makedirs(metadata_output_dir, exist_ok=True)
-    files_processed_successfully_count = 0
-    files_with_errors_count = 0 # Counts files with API errors or local save errors
-
-    def download_gcs_file_temporarily(bucket_name, blob_name):
-        try:
-            storage_client_download = storage.Client() # Create client inside thread
-            bucket = storage_client_download.bucket(bucket_name)
-            blob = bucket.blob(blob_name)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(blob_name)[1]) as temp_file:
-                print(f"[INFO] Downloading gs://{bucket_name}/{blob_name} to {temp_file.name} for duration check.")
-                blob.download_to_filename(temp_file.name)
-                return temp_file.name
-        except Exception as e_download:
-            print(f"Error downloading GCS file gs://{bucket_name}/{blob_name} for duration check: {e_download}")
-            st.session_state.batch_processing_errors.append(f"Download failed for {blob_name}: {e_download}")
-            return None
-
-    async def _process_batch_async():
-        nonlocal files_processed_successfully_count, files_with_errors_count
-        semaphore = asyncio.Semaphore(concurrent_api_calls_limit)
-        tasks = []
-
-        for i, gcs_video_uri_item in enumerate(selected_gcs_video_uris):
-            video_filename_key = os.path.basename(gcs_video_uri_item)
-            gcs_bucket_name = gcs_video_uri_item.split('/')[2]
-            gcs_blob_name = '/'.join(gcs_video_uri_item.split('/')[3:])
-            
-            # Download outside the process_one_video to avoid doing it inside the semaphore if possible,
-            # though it's still per-video.
-            temp_local_video_path = download_gcs_file_temporarily(gcs_bucket_name, gcs_blob_name)
-
-            async def process_one_video(current_gcs_uri, fn_key_for_status, current_index, local_path_for_duration):
-                nonlocal files_with_errors_count, files_processed_successfully_count
-                
-                # Use the ui_edited_prompt_template_text passed to the parent threaded function
-                prompt_for_this_segment = ui_edited_prompt_template_text 
-
-                if local_path_for_duration:
-                    try:
-                        st.session_state.live_streaming_outputs[fn_key_for_status] = f"Getting duration for {fn_key_for_status}..."
-                        actual_duration_str = get_video_duration_ffmpeg(local_path_for_duration)
-                        st.session_state.live_streaming_outputs[fn_key_for_status] = f"Duration for {fn_key_for_status}: {actual_duration_str}. Preparing prompt..."
-                        print(f"[INFO] Duration for {fn_key_for_status}: {actual_duration_str}")
-                        
-                        prompt_for_this_segment = prompt_for_this_segment.replace("{{actual_video_duration}}", actual_duration_str)
-                        prompt_for_this_segment = prompt_for_this_segment.replace("{{source_filename}}", fn_key_for_status)
-
-                    except Exception as e_duration: # Catch errors from get_video_duration_ffmpeg specifically
-                        print(f"Error getting duration or customizing prompt for {fn_key_for_status}: {e_duration}")
-                        st.session_state.live_streaming_outputs[fn_key_for_status] = f"Error getting duration for {fn_key_for_status}: {e_duration}. Using modified default prompt."
-                        st.session_state.batch_processing_errors.append(f"Duration check failed for {fn_key_for_status}: {e_duration}")
-                        
-                        prompt_for_this_segment = ui_edited_prompt_template_text.replace("{{source_filename}}", fn_key_for_status)
-                        prompt_for_this_segment = prompt_for_this_segment.replace(f" This clip is **`{{{{actual_video_duration}}}}`** long.", " The precise duration of this clip is undetermined, but it is a short segment.")
-                        prompt_for_this_segment = prompt_for_this_segment.replace("{{actual_video_duration}}", "its actual end time") # More generic fallback
-                    finally:
-                        if local_path_for_duration and local_path_for_duration.startswith(tempfile.gettempdir()):
-                            try:
-                                os.remove(local_path_for_duration)
-                                print(f"[INFO] Removed temporary file: {local_path_for_duration}")
-                            except OSError as e_remove:
-                                print(f"Error removing temporary file {local_path_for_duration}: {e_remove}")
-                else: # temp_local_video_path was None (download failed)
-                    st.warning(f"Could not download {fn_key_for_status} to determine duration. Using modified default prompt.")
-                    st.session_state.live_streaming_outputs[fn_key_for_status] = f"Download failed for {fn_key_for_status}. Using modified default prompt."
-                    prompt_for_this_segment = ui_edited_prompt_template_text.replace("{{source_filename}}", fn_key_for_status)
-                    prompt_for_this_segment = prompt_for_this_segment.replace(f" This clip is **`{{{{actual_video_duration}}}}`** long.", " The precise duration of this clip is undetermined due to a download issue, but it is a short segment.")
-                    prompt_for_this_segment = prompt_for_this_segment.replace("{{actual_video_duration}}", "its actual end time")
-
-                try:
-                    async with semaphore:
-                        print(f"[DEBUG process_one_video] Starting API call for: {fn_key_for_status} (Index: {current_index})")
-                        st.session_state.batch_progress_text = f"API call for file {current_index + 1}/{total_files}: {fn_key_for_status}"
-                        # Update live output for current file being processed by API
-                        st.session_state.live_streaming_outputs[fn_key_for_status] = f"Calling Gemini API for {fn_key_for_status}..."
-
-
-                        await call_gemini_api_async(
-                            current_gcs_uri,
-                            prompt_for_this_segment,
-                            gemini_api_key_for_batch,
-                            fn_key_for_status,
-                            ai_model_name_for_batch # Pass model name
-                        )
-                        if "Error:" not in st.session_state.batch_processed_files.get(fn_key_for_status, ""):
-                            full_response_text = st.session_state.live_streaming_outputs.get(fn_key_for_status, "")
-                            st.session_state.batch_processed_files[fn_key_for_status] = f"Saving: {fn_key_for_status} ({len(full_response_text)} chars)"
-                            base_name, _ = os.path.splitext(fn_key_for_status)
-                            output_txt_filename = f"{base_name}.txt"
-                            local_output_path = os.path.join(metadata_output_dir, output_txt_filename)
-                            try:
-                                with open(local_output_path, "w", encoding="utf-8") as f: f.write(full_response_text)
-                                st.session_state.batch_processed_files[fn_key_for_status] = "Success (Saved Locally)"
-                                st.session_state.live_streaming_outputs[fn_key_for_status] = f"Successfully saved locally.\n\n{full_response_text}"
-                                try:
-                                    st.session_state.batch_processed_files[fn_key_for_status] = f"Uploading to GCS: {fn_key_for_status}"
-                                    st.session_state.live_streaming_outputs[fn_key_for_status] += f"\nUploading to GCS..." # Append to log
-                                    storage_client_upload = storage.Client() # Client per upload attempt in thread
-                                    bucket_upload = storage_client_upload.bucket(gcs_bucket_name_for_upload)
-                                    # Use the new gcs_output_metadata_prefix_for_batch
-                                    gcs_destination_blob_name = f"{gcs_output_metadata_prefix_for_batch}{output_txt_filename}"
-                                    if not gcs_output_metadata_prefix_for_batch.endswith('/'):
-                                        gcs_destination_blob_name = f"{gcs_output_metadata_prefix_for_batch}/{output_txt_filename}"
-                                    blob_upload = bucket_upload.blob(gcs_destination_blob_name)
-                                    blob_upload.upload_from_filename(local_output_path)
-                                    st.session_state.batch_processed_files[fn_key_for_status] = "Success (Saved Locally & GCS)"
-                                    st.session_state.live_streaming_outputs[fn_key_for_status] = f"Successfully saved locally and to GCS: gs://{gcs_bucket_name_for_upload}/{gcs_destination_blob_name}\n\n{full_response_text}"
-                                    files_processed_successfully_count += 1
-                                except Exception as e_gcs_upload:
-                                    gcs_upload_error_msg = f"Error Uploading to GCS: {e_gcs_upload}"
-                                    st.session_state.batch_processed_files[fn_key_for_status] = f"Success (Saved Locally), GCS Upload Failed: {gcs_upload_error_msg}"
-                                    st.session_state.batch_processing_errors.append(f"Failed GCS upload for {fn_key_for_status}: {gcs_upload_error_msg}")
-                                    st.session_state.live_streaming_outputs[fn_key_for_status] += f"\n--- ERROR GCS UPLOAD ---\n{gcs_upload_error_msg}"
-                                    # If GCS upload is critical, this file now has an error associated with it.
-                                    # files_with_errors_count += 1 # Uncomment if GCS upload failure means overall file error
-                            except Exception as e_save:
-                                save_error_msg = f"Error Saving File Locally: {e_save}"
-                                st.session_state.batch_processed_files[fn_key_for_status] = save_error_msg
-                                st.session_state.batch_processing_errors.append(f"Failed saving {fn_key_for_status} locally: {save_error_msg}")
-                                st.session_state.live_streaming_outputs[fn_key_for_status] += f"\n--- ERROR SAVING LOCALLY ---\n{save_error_msg}"
-                                files_with_errors_count +=1
-                        else:
-                            files_with_errors_count += 1
-                except Exception as e_task:
-                    error_detail = f"Error: Unhandled in API call - {e_task}"
-                    if fn_key_for_status not in st.session_state.batch_processed_files or not st.session_state.batch_processed_files[fn_key_for_status].startswith("Error:"):
-                         st.session_state.batch_processed_files[fn_key_for_status] = error_detail
-                    st.session_state.batch_processing_errors.append(f"Failed processing {fn_key_for_status}: {e_task}")
-                    st.session_state.live_streaming_outputs[fn_key_for_status] = f"--- FATAL TASK ERROR ---\n{error_detail}"
-                    files_with_errors_count += 1
-                finally:
-                    completed_count_val = files_processed_successfully_count + files_with_errors_count
-                    new_progress_value = int((completed_count_val / total_files) * 100) if total_files > 0 else 0
-                    new_progress_text = f"File {completed_count_val}/{total_files} attempted. Progress: {new_progress_value}%"
-                    
-                    # Update session state for progress bar (Streamlit will pick this up on its next cycle)
-                    st.session_state.batch_progress_value = new_progress_value
-                    st.session_state.batch_progress_text = new_progress_text
-                    # st.rerun() # Avoid reruns inside the async task loop for stability
-
-            tasks.append(process_one_video(gcs_video_uri_item, video_filename_key, i, temp_local_video_path))
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for i, result_item in enumerate(results):
-            if isinstance(result_item, Exception):
-                fn_key_error = os.path.basename(selected_gcs_video_uris[i])
-                print(f"Async task for {fn_key_error} failed with exception: {result_item}")
-                # Ensure error is logged if not already caught by inner try-except
-                if fn_key_error not in st.session_state.batch_processing_errors: # Avoid duplicate error logging
-                    st.session_state.batch_processing_errors.append(f"Task for {fn_key_error} raised: {result_item}")
-                if not st.session_state.batch_processed_files.get(fn_key_error, "").startswith("Error:"):
-                    st.session_state.batch_processed_files[fn_key_error] = f"Error: Async task failed - {result_item}"
-
-
-    try:
-        asyncio.run(_process_batch_async())
-    except RuntimeError as e:
-        if "cannot be called when another loop is running" in str(e):
-            st.session_state.batch_processing_errors.append(f"Asyncio loop error: {e}. Consider main thread async or nest_asyncio earlier.")
-        else: raise
-    finally:
-        # Ensure batch_processing_errors list exists
-        if 'batch_processing_errors' not in st.session_state:
-            st.session_state.batch_processing_errors = []
-
-        st.session_state.batch_progress_value = 100 # Mark as complete
-        st.session_state.is_batch_processing = False
-        st.session_state.batch_progress_text = "--- THREAD FINALLY BLOCK EXECUTED ---" # Distinct message for testing
-
-        # The one print statement that seems to consistently work
-        print(f"[DEBUG RERUN batch_process_metadata_threaded] About to sleep then call st.rerun() at end of batch_process_metadata_threaded finally block.", flush=True)
-        time.sleep(0.1) # Small delay to allow state to propagate
-        st.rerun()
-
-
 def render_tab2(
-    gcs_bucket_name_param: str, 
+    gcs_bucket_name_param: str,
     gcs_prefix_param: str,
     gemini_ready: bool,
-    # prompt_text_global: str, # This will be the default_prompt_template
     metadata_output_dir_global: str,
     gemini_api_key_global: str,
-    ai_model_name_global: str, # Added
+    ai_model_name_global: str,
     concurrent_api_calls_limit: int,
     allowed_video_extensions_global: list,
     gcs_metadata_bucket_name: str,
-    gcs_output_metadata_prefix_param: str # Added for GCS output path
+    gcs_output_metadata_prefix_param: str
 ):
-    print(f"[DEBUG render_tab2 ENTRY] render_tab2 called. is_batch_processing: {st.session_state.get('is_batch_processing', 'Not Set')}") # NEW TOP LEVEL LOG
-    if not st.session_state.get('is_batch_processing', True): # If False, meaning it *should* be showing results or initial state
-        print(f"[DEBUG render_tab2 POST-BATCH] batch_processed_files: {st.session_state.get('batch_processed_files')}")
-        print(f"[DEBUG render_tab2 POST-BATCH] live_streaming_outputs: {st.session_state.get('live_streaming_outputs')}")
-        print(f"[DEBUG render_tab2 POST-BATCH] batch_processing_errors: {st.session_state.get('batch_processing_errors')}")
-        print(f"[DEBUG render_tab2 POST-BATCH] batch_progress_text: {st.session_state.get('batch_progress_text')}")
-    header_prefix = gcs_prefix_param if gcs_prefix_param else ""
-    if header_prefix and not header_prefix.endswith('/'): header_prefix += '/'
-    st.header(f"Step 2: Metadata Generation from GCS (gs://{gcs_bucket_name_param}/{header_prefix}*)")
+    st.header(f"Step 2: Metadata Generation from Segment Folders (gs://{gcs_bucket_name_param}/segments/)")
 
-    # Use the globally defined default_prompt_template for initialization
-    if "batch_prompt_text_area_content" not in st.session_state: 
-        st.session_state.batch_prompt_text_area_content = default_prompt_template 
-    if "is_batch_processing" not in st.session_state: st.session_state.is_batch_processing = False
-    if "batch_progress_text" not in st.session_state: st.session_state.batch_progress_text = ""
-    if "batch_processed_files" not in st.session_state: st.session_state.batch_processed_files = {}
-    if "batch_processing_errors" not in st.session_state: st.session_state.batch_processing_errors = []
-    if "multiselect_gcs_videos_for_metadata" not in st.session_state: st.session_state.multiselect_gcs_videos_for_metadata = []
-    if "batch_progress_value" not in st.session_state: st.session_state.batch_progress_value = 0
-    if "batch_progress_bar_placeholder" not in st.session_state: st.session_state.batch_progress_bar_placeholder = None
-    if "live_streaming_outputs" not in st.session_state: st.session_state.live_streaming_outputs = {}
-    if "default_gcs_selection_applied" not in st.session_state: st.session_state.default_gcs_selection_applied = False
+    # Initialize session state
+    if "metadata_job_id" not in st.session_state:
+        st.session_state.metadata_job_id = None
+    if "metadata_job_status" not in st.session_state:
+        st.session_state.metadata_job_status = None
+    if "metadata_job_details" not in st.session_state:
+        st.session_state.metadata_job_details = ""
+    if "batch_prompt_text_area_content" not in st.session_state:
+        st.session_state.batch_prompt_text_area_content = default_prompt_template
+    if "batch_progress_bar_placeholder" not in st.session_state:
+        st.session_state.batch_progress_bar_placeholder = None
+    if "processed_metadata_content" not in st.session_state:
+        st.session_state.processed_metadata_content = None
+    if "processed_metadata_filename" not in st.session_state:
+        st.session_state.processed_metadata_filename = None
 
+    # --- GCS Folder Listing ---
     gcs_video_uris = []
-    error_listing_files = None
+    segment_folders = []
     if not gcs_bucket_name_param:
-        error_listing_files = "GCS Bucket name for videos not provided."
-        st.error(error_listing_files)
+        st.error("GCS Bucket name for videos not provided.")
     else:
         try:
             storage_client = storage.Client()
             bucket = storage_client.bucket(gcs_bucket_name_param)
-            blobs = bucket.list_blobs(prefix=gcs_prefix_param if gcs_prefix_param else None)
-            for blob_item in blobs:
-                if any(blob_item.name.lower().endswith(ext) for ext in allowed_video_extensions_global):
-                    uri = f"gs://{gcs_bucket_name_param}/{blob_item.name}"
-                    gcs_video_uris.append(uri)
-            gcs_video_uris.sort()
-            if not gcs_video_uris: st.warning(f"No video files found in 'gs://{gcs_bucket_name_param}/{gcs_prefix_param or ''}'.")
-        except Exception as e_list:
-            error_listing_files = f"Error listing files from GCS (gs://{gcs_bucket_name_param}/{gcs_prefix_param or ''}): {e_list}"
-            st.error(error_listing_files)
+            # List blobs and infer directories from them
+            blobs = bucket.list_blobs(prefix="segments/")
+            folder_set = set()
+            for blob in blobs:
+                if any(blob.name.lower().endswith(ext) for ext in allowed_video_extensions_global):
+                    folder_path = os.path.dirname(blob.name)
+                    if folder_path:
+                        folder_set.add(folder_path)
+            segment_folders = sorted(list(folder_set))
 
-    if gcs_video_uris:
-        st.success(f"Found {len(gcs_video_uris)} video file(s) in 'gs://{gcs_bucket_name_param}/{gcs_prefix_param or ''}'.")
-        if not st.session_state.get('default_gcs_selection_applied', False) and gcs_video_uris:
-            st.session_state.multiselect_gcs_videos_for_metadata = list(gcs_video_uris)
-            st.session_state.default_gcs_selection_applied = True
+            if not segment_folders:
+                st.warning(f"No video segment folders found in 'gs://{gcs_bucket_name_param}/segments/'. Please split a video in Step 1.")
+        except Exception as e:
+            st.error(f"Error listing segment folders from GCS: {e}")
 
-        st.multiselect(
-            "Select GCS Video Files for Metadata Generation:",
-            options=gcs_video_uris,
-            default=st.session_state.get("multiselect_gcs_videos_for_metadata", []),
-            format_func=lambda x: os.path.basename(x),
-            key="multiselect_gcs_videos_for_metadata"
+    if segment_folders:
+        st.success(f"Found {len(segment_folders)} video segment folder(s).")
+
+        selected_folder = st.selectbox(
+            "Select a Video Segment Folder to Process:",
+            options=segment_folders,
+            key="selectbox_gcs_segment_folder"
         )
+
+        if selected_folder:
+            try:
+                storage_client = storage.Client()
+                bucket = storage_client.bucket(gcs_bucket_name_param)
+                blobs = bucket.list_blobs(prefix=f"{selected_folder}/")
+                for blob in blobs:
+                    if any(blob.name.lower().endswith(ext) for ext in allowed_video_extensions_global):
+                        gcs_video_uris.append(f"gs://{gcs_bucket_name_param}/{blob.name}")
+                gcs_video_uris.sort()
+
+                if gcs_video_uris:
+                    st.write("The following video files will be processed for metadata generation:")
+                    st.json([os.path.basename(uri) for uri in gcs_video_uris])
+                else:
+                    st.warning("No video files found in the selected folder.")
+            except Exception as e:
+                st.error(f"Error listing files from the selected GCS folder: {e}")
         
-        current_batch_prompt_template_from_ui = st.text_area(
-            "Gemini Prompt TEMPLATE (Placeholders {{actual_video_duration}} and {{source_filename}} will be replaced automatically):",
-            value=st.session_state.batch_prompt_text_area_content, # This is the template
+        st.text_area(
+            "Gemini Prompt TEMPLATE:",
+            value=st.session_state.batch_prompt_text_area_content,
             height=300,
             key="batch_prompt_text_area_widget",
             on_change=lambda: setattr(st.session_state, 'batch_prompt_text_area_content', st.session_state.batch_prompt_text_area_widget)
         )
 
-        if st.session_state.get("multiselect_gcs_videos_for_metadata"):
-            if not gemini_ready or not gemini_api_key_global:
-                st.warning("⚠️ Gemini API Key not configured.")
-            elif not gcs_metadata_bucket_name:
-                st.warning("⚠️ GCS bucket for metadata output not configured.")
-            else:
-                st.markdown("---")
-                batch_process_button_disabled = st.session_state.get('is_batch_processing', False)
-                if st.button("✨ Generate Metadata for Selected GCS Files", key="batch_process_gemini_button_gcs", disabled=batch_process_button_disabled):
-                    st.session_state.is_batch_processing = True
-                    st.session_state.batch_processed_files = {} 
-                    st.session_state.batch_processing_errors = []
-                    st.session_state.live_streaming_outputs = {}
-                    # Initialize statuses for selected files
-                    for gcs_uri_init in st.session_state.get("multiselect_gcs_videos_for_metadata", []):
-                        fn_key_init = os.path.basename(gcs_uri_init)
-                        st.session_state.batch_processed_files[fn_key_init] = f"Queued: {fn_key_init}"
-                        st.session_state.live_streaming_outputs[fn_key_init] = "Queued..."
-                    st.session_state.batch_progress_value = 0
-                    st.session_state.batch_progress_text = "Starting batch processing..."
-                    
-                    # Ensure the latest template from UI is used
-                    st.session_state.batch_prompt_text_area_content = current_batch_prompt_template_from_ui
+        if st.button("✨ Generate Metadata via API", key="batch_process_gemini_button_gcs"):
+            selected_videos = gcs_video_uris
+            if not selected_videos:
+                st.warning("No video files are selected or found in the chosen folder.")
+                return
 
-                    uris_to_process = st.session_state.get("multiselect_gcs_videos_for_metadata", [])
-                    if not uris_to_process:
-                        st.error("No GCS video files selected for processing.")
-                        st.session_state.is_batch_processing = False
-                    else:
-                        ctx = get_script_run_ctx()
-                        thread = threading.Thread(
-                            target=batch_process_metadata_threaded,
-                            args=(
-                                ctx, uris_to_process,
-                                st.session_state.batch_prompt_text_area_content, # Pass the TEMPLATE from session state
-                                metadata_output_dir_global,
-                                gemini_api_key_global,
-                                ai_model_name_global, # Added
-                                concurrent_api_calls_limit,
-                                gcs_metadata_bucket_name, # Maps to gcs_bucket_name_for_upload
-                                gcs_output_metadata_prefix_param # Added, maps to gcs_output_metadata_prefix_for_batch
-                            )
-                        )
-                        thread.start()
-                        print(f"[DEBUG RERUN render_tab2] Calling st.rerun() after starting thread.") # LOG ADDED
-                        st.rerun() 
-    
-    # ... (rest of render_tab2: progress bar, results display, clear button - should be mostly fine) ...
-    elif not error_listing_files:
-        st.info(f"No video files found in 'gs://{gcs_bucket_name_param}/{gcs_prefix_param or ''}'. Ensure files exist and bucket/prefix are correct.")
+            st.session_state.metadata_job_id = None
+            st.session_state.metadata_job_status = "starting"
+            st.session_state.metadata_job_details = "Initializing job..."
+            st.session_state.processed_metadata_content = None # Clear previous results
+            st.session_state.processed_metadata_filename = None
 
-    if st.session_state.get('is_batch_processing', False) or st.session_state.get('batch_progress_value', 0) > 0 :
-        if st.session_state.batch_progress_bar_placeholder is None:
-            st.session_state.batch_progress_bar_placeholder = st.empty()
-        current_progress = st.session_state.get('batch_progress_value', 0)
-        current_text = st.session_state.get('batch_progress_text', "Initializing...")
-        if st.session_state.batch_progress_bar_placeholder:
-            st.session_state.batch_progress_bar_placeholder.progress(current_progress, text=current_text)
-    elif st.session_state.batch_progress_bar_placeholder is not None:
-        st.session_state.batch_progress_bar_placeholder.empty()
-        st.session_state.batch_progress_bar_placeholder = None
+            try:
+                api_url = f"{API_BASE_URL}/generate-metadata/"
+                payload = {
+                    "gcs_bucket": gcs_bucket_name_param,
+                    "gcs_video_uris": selected_videos,
+                    "prompt_template": st.session_state.batch_prompt_text_area_content,
+                    "ai_model_name": ai_model_name_global,
+                    "gcs_output_prefix": gcs_output_metadata_prefix_param
+                }
+                response = requests.post(api_url, json=payload)
+                response.raise_for_status()
+                
+                data = response.json()
+                st.session_state.metadata_job_id = data.get("job_id")
+                st.session_state.metadata_job_status = "pending"
+                st.success(f"Backend job for metadata generation started! Job ID: {st.session_state.metadata_job_id}")
 
-    print(f"[DEBUG render_tab2 RESULTS_CHECK] is_batch_processing: {st.session_state.get('is_batch_processing', 'Not Set')}")
-    print(f"[DEBUG render_tab2 RESULTS_CHECK] batch_processed_files exists: {'batch_processed_files' in st.session_state}")
-    if 'batch_processed_files' in st.session_state:
-        print(f"[DEBUG render_tab2 RESULTS_CHECK] batch_processed_files content: {st.session_state.batch_processed_files}")
-    else:
-        print(f"[DEBUG render_tab2 RESULTS_CHECK] batch_processed_files is empty or not set.")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to start metadata job. API connection error: {e}")
+                st.session_state.metadata_job_id = None
 
-    if not st.session_state.get('is_batch_processing', False) and st.session_state.get('batch_processed_files'):
-        if st.session_state.get('batch_progress_bar_placeholder') is not None:
-            st.session_state.batch_progress_bar_placeholder.empty()
-            st.session_state.batch_progress_bar_placeholder = None
+    # --- Job Status Polling ---
+    if st.session_state.get("metadata_job_id"):
         st.markdown("---")
-        st.subheader("Batch Processing Results:")
-        final_batch_status_message = st.session_state.get('batch_progress_text', "Batch processing finished.")
-        has_errors_final = "issue(s) encountered" in final_batch_status_message.lower() or \
-                           any("error" in status.lower() for status in st.session_state.batch_processed_files.values())
-
-        if has_errors_final:
-            st.error(final_batch_status_message)
-        else:
-            st.success(final_batch_status_message)
-
-        if st.session_state.get("batch_processing_errors"):
-            with st.expander("Show Detailed Errors Log", expanded=False):
-                for err_msg_item in st.session_state.batch_processing_errors: # Renamed err_msg
-                    st.text(err_msg_item) # Using st.text for better formatting of multiline errors
+        st.subheader("Processing Status")
         
-        results_container = st.container()
-        with results_container:
-            sorted_filenames_res = sorted(st.session_state.get("batch_processed_files", {}).keys()) # Renamed
-            for filename_key_results in sorted_filenames_res:
-                status_res = st.session_state.batch_processed_files.get(filename_key_results, "Unknown status") # Renamed
-                streamed_content_res = st.session_state.live_streaming_outputs.get(filename_key_results, "") # Renamed
-                expander_label_status_res = status_res.split('(', 1)[0].split(':', 1)[0].strip() # Renamed
-                expanded_default_res = ("Error" in status_res or \
-                                   ("Success (Saved Locally & GCS)" not in status_res and \
-                                    "Queued" not in status_res and \
-                                    "Initiating" not in status_res and \
-                                    "Processing" not in status_res and \
-                                    "Uploading to GCS" not in status_res and \
-                                    "Success (Saved Locally)" not in status_res
-                                    )) # Renamed
-                with st.expander(f"{filename_key_results} - Status: {expander_label_status_res}", expanded=expanded_default_res):
-                    st.markdown(f"**Full Status:** `{status_res}`")
-                    if streamed_content_res:
-                        st.text_area("Generated Content/Log:", value=streamed_content_res, height=200, disabled=True, key=f"content_area_{filename_key_results}_results")
-                    elif "Error" in status_res and not streamed_content_res :
-                         st.caption("An error occurred before content generation, or content was not captured.")
-                    if "Success (Saved Locally & GCS)" in status_res:
-                        st.success(f"✅ Successfully processed and saved to GCS.")
-                    elif "Success (Saved Locally)" in status_res and "GCS Upload Failed" in status_res:
-                        st.warning(f"✅ Saved locally. ⚠️ GCS Upload Failed.") # Simpler message
-                    elif "Error" in status_res:
-                        st.error(f"❌ Error during processing.") # Simpler message
-                    # ... other status messages
+        job_id = st.session_state.metadata_job_id
+        status_placeholder = st.empty()
+        
+        while st.session_state.get("metadata_job_status") in ["pending", "in_progress", "starting"]:
+            try:
+                status_url = f"{API_BASE_URL}/jobs/{job_id}"
+                response = requests.get(status_url)
+                response.raise_for_status()
+                
+                job_data = response.json()
+                st.session_state.metadata_job_status = job_data.get("status")
+                st.session_state.metadata_job_details = job_data.get("details")
 
-        if st.button("Clear Batch Results", key="clear_batch_results_button_gcs"):
-            # ... (clear logic as before)
-            st.session_state.batch_processed_files = {}
-            st.session_state.batch_processing_errors = []
-            st.session_state.batch_progress_text = ""
-            st.session_state.batch_progress_value = 0
-            st.session_state.live_streaming_outputs = {}
-            if "multiselect_gcs_videos_for_metadata" in st.session_state:
-                st.session_state.multiselect_gcs_videos_for_metadata = []
-            st.session_state.default_gcs_selection_applied = False
-            if st.session_state.get('batch_progress_bar_placeholder') is not None:
-                st.session_state.batch_progress_bar_placeholder.empty()
-                st.session_state.batch_progress_bar_placeholder = None
-            st.session_state.is_batch_processing = False
-            print(f"[DEBUG RERUN render_tab2] Calling st.rerun() after clearing batch results.")
+                if st.session_state.metadata_job_status == "completed":
+                    status_placeholder.success(f"✅ **Job Complete:** {st.session_state.metadata_job_details}")
+                    try:
+                        details_str = st.session_state.metadata_job_details
+                        if "Consolidated metadata saved to" in details_str:
+                            gcs_path_str = details_str.split("gs://")[1]
+                            gcs_bucket_name, gcs_blob_name = gcs_path_str.split('/', 1)
+                            storage_client = storage.Client()
+                            bucket = storage_client.bucket(gcs_bucket_name)
+                            blob = bucket.blob(gcs_blob_name)
+                            metadata_content = blob.download_as_string()
+                            st.session_state.processed_metadata_content = metadata_content.decode('utf-8')
+                            st.session_state.processed_metadata_filename = os.path.basename(gcs_blob_name)
+                    except Exception as e:
+                        st.error(f"Failed to download result from GCS. Error: {e}")
+                    st.session_state.metadata_job_id = None # Clear job
+                    break
+                elif st.session_state.metadata_job_status == "failed":
+                    status_placeholder.error(f"❌ **Job Failed:** {st.session_state.metadata_job_details}")
+                    st.session_state.metadata_job_id = None # Clear job
+                    break
+                else:
+                    status_placeholder.info(f"⏳ **In Progress:** {st.session_state.metadata_job_details}")
+
+            except requests.exceptions.RequestException as e:
+                status_placeholder.error(f"Could not get job status. Connection error: {e}")
+                break
+            
+            time.sleep(5)
+
+    if st.session_state.get("processed_metadata_content"):
+        st.markdown("---")
+        st.subheader("✅ Consolidated Metadata Result")
+        st.text_area(
+            label=f"Downloaded from GCS: {st.session_state.get('processed_metadata_filename', 'N/A')}",
+            value=st.session_state.processed_metadata_content,
+            height=400,
+            key="metadata_result_display"
+        )
+        if st.button("Clear Metadata Result", key="clear_metadata_result_button"):
+            st.session_state.processed_metadata_content = None
+            st.session_state.processed_metadata_filename = None
             st.rerun()

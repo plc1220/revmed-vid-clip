@@ -1,0 +1,104 @@
+import os
+from google.cloud import storage
+from typing import List, Tuple
+
+def ensure_gcs_folder_exists(bucket_name: str, folder_name: str) -> Tuple[bool, str]:
+    """
+    Ensures a GCS 'folder' exists by creating a .placeholder file if it's empty.
+    Returns a tuple of (success_boolean, error_message_string).
+    """
+    if not folder_name.endswith('/'):
+        folder_name += '/'
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blobs = list(bucket.list_blobs(prefix=folder_name, max_results=1))
+        if not blobs:
+            placeholder_blob_name = f"{folder_name}.gcs_folder_placeholder"
+            blob = bucket.blob(placeholder_blob_name)
+            blob.upload_from_string("", content_type="text/plain")
+            print(f"Created placeholder for GCS folder: gs://{bucket_name}/{folder_name}")
+        return True, ""
+    except Exception as e:
+        error_msg = f"Error ensuring GCS folder gs://{bucket_name}/{folder_name} exists: {e}"
+        print(error_msg)
+        return False, error_msg
+
+def list_gcs_files(bucket_name: str, prefix: str = "", allowed_extensions: List[str] = None) -> Tuple[List[str], str]:
+    """
+    Lists files in a GCS bucket with a given prefix and optional extension filtering.
+    Returns a tuple of (file_list, error_message_string).
+    """
+    files = []
+    if prefix and not prefix.endswith('/'):
+        prefix += '/'
+
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        if not bucket.exists():
+            return [], f"Bucket '{bucket_name}' does not exist or you don't have access."
+
+        folder_exists, folder_error = ensure_gcs_folder_exists(bucket_name, prefix)
+        if not folder_exists:
+            return [], folder_error
+
+        blobs = bucket.list_blobs(prefix=prefix)
+        for blob in blobs:
+            # Skip placeholder files
+            if blob.name == f"{prefix}.gcs_folder_placeholder" or blob.name.endswith('/'):
+                continue
+            
+            if allowed_extensions:
+                if any(blob.name.lower().endswith(ext) for ext in allowed_extensions):
+                    files.append(blob.name)
+            else:
+                files.append(blob.name)
+
+        display_location = f"folder '{prefix}' in bucket '{bucket_name}'" if prefix else f"bucket '{bucket_name}'"
+        if not files:
+            return [], f"No files found in {display_location}."
+            
+        return sorted(files), ""
+    except Exception as e:
+        error_message = f"Error listing GCS files from gs://{bucket_name}/{prefix}: {e}"
+        print(f"GCS Error: {error_message}")
+        return [], error_message
+
+def download_gcs_blob(bucket_name: str, source_blob_name: str, destination_file_name: str) -> Tuple[bool, str]:
+    """
+    Downloads a blob from the bucket to a local file.
+    Returns a tuple of (success_boolean, error_message_string).
+    """
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(source_blob_name)
+        
+        # Create local directory if it doesn't exist
+        destination_dir = os.path.dirname(destination_file_name)
+        if destination_dir:
+            os.makedirs(destination_dir, exist_ok=True)
+            
+        blob.download_to_filename(destination_file_name)
+        return True, ""
+    except Exception as e:
+        error_msg = f"Error downloading GCS blob gs://{bucket_name}/{source_blob_name} to {destination_file_name}: {e}"
+        print(error_msg)
+        return False, error_msg
+
+def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_name: str) -> Tuple[bool, str]:
+    """
+    Uploads a file to the bucket.
+    Returns a tuple of (success_boolean, error_message_string).
+    """
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_filename(source_file_name)
+        return True, ""
+    except Exception as e:
+        error_msg = f"Error uploading {source_file_name} to GCS blob gs://{bucket_name}/{destination_blob_name}: {e}"
+        print(error_msg)
+        return False, error_msg

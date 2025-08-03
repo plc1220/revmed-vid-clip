@@ -1,0 +1,23 @@
+# Environments
+.env
+.venv
+rev-med/
+
+# Credentials
+*.json
+gcs_credentials.json
+my-rd-coe-demo-data-0f2a5a8dbc36.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Temporary files and directories
+api_temp_storage/
+job_store/
+test_split_output/
+test.mp4
+
+# Tooling
+.roo/
+.streamlit/
