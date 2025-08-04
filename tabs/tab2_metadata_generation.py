@@ -103,62 +103,68 @@ def render_tab2(
         st.session_state.batch_prompt_text_area_content = default_prompt_template
     if "batch_progress_bar_placeholder" not in st.session_state:
         st.session_state.batch_progress_bar_placeholder = None
-    if "processed_metadata_content" not in st.session_state:
-        st.session_state.processed_metadata_content = None
-    if "processed_metadata_filename" not in st.session_state:
-        st.session_state.processed_metadata_filename = None
+    if "generated_metadata_files" not in st.session_state:
+        st.session_state.generated_metadata_files = []
+    if "viewed_metadata_content" not in st.session_state:
+        st.session_state.viewed_metadata_content = {}
 
-    # --- GCS Folder Listing ---
+    # --- GCS File Listing ---
     gcs_video_uris = []
-    segment_folders = []
     if not gcs_bucket_name_param:
         st.error("GCS Bucket name for videos not provided.")
     else:
         try:
             storage_client = storage.Client()
             bucket = storage_client.bucket(gcs_bucket_name_param)
-            # List blobs and infer directories from them
             blobs = bucket.list_blobs(prefix="segments/")
-            folder_set = set()
-            for blob in blobs:
-                if any(blob.name.lower().endswith(ext) for ext in allowed_video_extensions_global):
-                    folder_path = os.path.dirname(blob.name)
-                    if folder_path:
-                        folder_set.add(folder_path)
-            segment_folders = sorted(list(folder_set))
+            # Filter for allowed video extensions
+            gcs_video_uris = sorted([
+                f"gs://{gcs_bucket_name_param}/{blob.name}"
+                for blob in blobs
+                if any(blob.name.lower().endswith(ext) for ext in allowed_video_extensions_global)
+            ])
 
-            if not segment_folders:
-                st.warning(f"No video segment folders found in 'gs://{gcs_bucket_name_param}/segments/'. Please split a video in Step 1.")
+            if not gcs_video_uris:
+                st.warning(f"No video segment files found in 'gs://{gcs_bucket_name_param}/segments/'. Please split a video in Step 1.")
         except Exception as e:
-            st.error(f"Error listing segment folders from GCS: {e}")
+            st.error(f"Error listing segment files from GCS: {e}")
 
-    if segment_folders:
-        st.success(f"Found {len(segment_folders)} video segment folder(s).")
+    if gcs_video_uris:
+        st.success(f"Found {len(gcs_video_uris)} video segment file(s).")
 
-        selected_folder = st.selectbox(
-            "Select a Video Segment Folder to Process:",
-            options=segment_folders,
-            key="selectbox_gcs_segment_folder"
-        )
+        # Initialize or update selection state
+        if 'video_selection' not in st.session_state:
+            st.session_state.video_selection = {}
 
-        if selected_folder:
-            try:
-                storage_client = storage.Client()
-                bucket = storage_client.bucket(gcs_bucket_name_param)
-                blobs = bucket.list_blobs(prefix=f"{selected_folder}/")
-                for blob in blobs:
-                    if any(blob.name.lower().endswith(ext) for ext in allowed_video_extensions_global):
-                        gcs_video_uris.append(f"gs://{gcs_bucket_name_param}/{blob.name}")
-                gcs_video_uris.sort()
+        # Update state for current list of videos, preserving existing selections
+        current_selection = st.session_state.video_selection.copy()
+        st.session_state.video_selection = {uri: current_selection.get(uri, False) for uri in gcs_video_uris}
 
-                if gcs_video_uris:
-                    st.write("The following video files will be processed for metadata generation:")
-                    st.json([os.path.basename(uri) for uri in gcs_video_uris])
-                else:
-                    st.warning("No video files found in the selected folder.")
-            except Exception as e:
-                st.error(f"Error listing files from the selected GCS folder: {e}")
-        
+        # --- Selection Controls ---
+        col1, col2, _ = st.columns([0.15, 0.15, 0.7])
+        with col1:
+            if st.button("Select All", key="select_all_videos"):
+                for uri in gcs_video_uris:
+                    st.session_state.video_selection[uri] = True
+                st.rerun()
+        with col2:
+            if st.button("Deselect All", key="deselect_all_videos"):
+                for uri in gcs_video_uris:
+                    st.session_state.video_selection[uri] = False
+                st.rerun()
+
+        # --- Video List with Checkboxes ---
+        st.write("Select video files to process for metadata generation:")
+        for uri in gcs_video_uris:
+            # The key must be unique, so we use the uri itself
+            is_selected = st.checkbox(
+                os.path.basename(uri),
+                value=st.session_state.video_selection.get(uri, False),
+                key=f"cb_{uri}"
+            )
+            st.session_state.video_selection[uri] = is_selected
+
+        # --- Prompt and Generate Button ---
         st.text_area(
             "Gemini Prompt TEMPLATE:",
             value=st.session_state.batch_prompt_text_area_content,
@@ -167,17 +173,18 @@ def render_tab2(
             on_change=lambda: setattr(st.session_state, 'batch_prompt_text_area_content', st.session_state.batch_prompt_text_area_widget)
         )
 
-        if st.button("✨ Generate Metadata via API", key="batch_process_gemini_button_gcs"):
-            selected_videos = gcs_video_uris
+        if st.button("✨ Generate Metadata for Selected Files", key="batch_process_gemini_button_gcs"):
+            selected_videos = [uri for uri, selected in st.session_state.video_selection.items() if selected]
+            
             if not selected_videos:
-                st.warning("No video files are selected or found in the chosen folder.")
+                st.warning("No video files are selected. Please check at least one video.")
                 return
 
             st.session_state.metadata_job_id = None
             st.session_state.metadata_job_status = "starting"
             st.session_state.metadata_job_details = "Initializing job..."
-            st.session_state.processed_metadata_content = None # Clear previous results
-            st.session_state.processed_metadata_filename = None
+            st.session_state.generated_metadata_files = [] # Clear previous results
+            st.session_state.viewed_metadata_content = {}
 
             try:
                 api_url = f"{API_BASE_URL}/generate-metadata/"
@@ -219,22 +226,11 @@ def render_tab2(
                 st.session_state.metadata_job_details = job_data.get("details")
 
                 if st.session_state.metadata_job_status == "completed":
-                    status_placeholder.success(f"✅ **Job Complete:** {st.session_state.metadata_job_details}")
-                    try:
-                        details_str = st.session_state.metadata_job_details
-                        if "Consolidated metadata saved to" in details_str:
-                            gcs_path_str = details_str.split("gs://")[1]
-                            gcs_bucket_name, gcs_blob_name = gcs_path_str.split('/', 1)
-                            storage_client = storage.Client()
-                            bucket = storage_client.bucket(gcs_bucket_name)
-                            blob = bucket.blob(gcs_blob_name)
-                            metadata_content = blob.download_as_string()
-                            st.session_state.processed_metadata_content = metadata_content.decode('utf-8')
-                            st.session_state.processed_metadata_filename = os.path.basename(gcs_blob_name)
-                    except Exception as e:
-                        st.error(f"Failed to download result from GCS. Error: {e}")
+                    status_placeholder.success(f"✅ **Job Complete:** {job_data.get('details')}")
+                    st.session_state.generated_metadata_files = job_data.get("generated_files", [])
+                    st.session_state.viewed_metadata_content = {} # Clear previously viewed content
                     st.session_state.metadata_job_id = None # Clear job
-                    break
+                    st.rerun() # Rerun to display results immediately
                 elif st.session_state.metadata_job_status == "failed":
                     status_placeholder.error(f"❌ **Job Failed:** {st.session_state.metadata_job_details}")
                     st.session_state.metadata_job_id = None # Clear job
@@ -248,16 +244,39 @@ def render_tab2(
             
             time.sleep(5)
 
-    if st.session_state.get("processed_metadata_content"):
+    if st.session_state.get("generated_metadata_files"):
         st.markdown("---")
-        st.subheader("✅ Consolidated Metadata Result")
-        st.text_area(
-            label=f"Downloaded from GCS: {st.session_state.get('processed_metadata_filename', 'N/A')}",
-            value=st.session_state.processed_metadata_content,
-            height=400,
-            key="metadata_result_display"
-        )
-        if st.button("Clear Metadata Result", key="clear_metadata_result_button"):
-            st.session_state.processed_metadata_content = None
-            st.session_state.processed_metadata_filename = None
+        st.subheader("✅ Generated Metadata Files")
+
+        for gcs_uri in st.session_state.generated_metadata_files:
+            file_basename = os.path.basename(gcs_uri)
+            with st.expander(f"View Metadata for: {file_basename}"):
+                # Check if content is already downloaded and stored
+                if file_basename in st.session_state.viewed_metadata_content:
+                    st.text_area(
+                        label="Metadata Content",
+                        value=st.session_state.viewed_metadata_content[file_basename],
+                        height=300,
+                        key=f"meta_content_{gcs_uri}"
+                    )
+                else:
+                    # Show a button to load the content on demand
+                    if st.button("Load Content", key=f"load_btn_{gcs_uri}"):
+                        try:
+                            gcs_path_str = gcs_uri.split("gs://")[1]
+                            gcs_bucket_name, gcs_blob_name = gcs_path_str.split('/', 1)
+                            
+                            storage_client = storage.Client()
+                            bucket = storage_client.bucket(gcs_bucket_name)
+                            blob = bucket.blob(gcs_blob_name)
+                            
+                            metadata_content = blob.download_as_string().decode('utf-8')
+                            st.session_state.viewed_metadata_content[file_basename] = metadata_content
+                            st.rerun() # Rerun to display the loaded content
+                        except Exception as e:
+                            st.error(f"Failed to download {file_basename} from GCS. Error: {e}")
+
+        if st.button("Clear All Results", key="clear_metadata_results_button"):
+            st.session_state.generated_metadata_files = []
+            st.session_state.viewed_metadata_content = {}
             st.rerun()

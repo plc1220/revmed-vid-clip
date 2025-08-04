@@ -107,6 +107,8 @@ def render_tab5(
 
                 if st.session_state.ai_clips_job_status == "completed":
                     status_placeholder.success(f"✅ **Job Complete:** {st.session_state.ai_clips_job_details}")
+                    st.write("Debug Info: Full job data response")
+                    st.json(job_data)
                     st.session_state.ai_clips_job_id = None
                     break
                 elif st.session_state.ai_clips_job_status == "failed":

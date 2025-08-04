@@ -1,6 +1,6 @@
 streamlit
 google-cloud-storage
-google-generativeai
+google-genai
 ffmpeg-python
 tenacity
 nest_asyncio

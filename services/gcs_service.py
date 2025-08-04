@@ -1,16 +1,39 @@
 import os
 from google.cloud import storage
 from typing import List, Tuple
+import datetime
+
+# --- Centralized GCS Client Initialization ---
+_storage_client = None
+
+def get_storage_client() -> storage.Client:
+    """
+    Initializes and returns a singleton GCS storage client.
+    It uses credentials from the environment variable GOOGLE_APPLICATION_CREDENTIALS.
+    """
+    global _storage_client
+    if _storage_client is None:
+        try:
+            # Explicitly use credentials from the environment variable
+            _storage_client = storage.Client.from_service_account_json(
+                os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            )
+        except Exception as e:
+            print(f"Error initializing GCS client from service account: {e}")
+            # Fallback to default client if service account fails
+            _storage_client = storage.Client()
+    return _storage_client
+
+# --- GCS Helper Functions ---
 
 def ensure_gcs_folder_exists(bucket_name: str, folder_name: str) -> Tuple[bool, str]:
     """
     Ensures a GCS 'folder' exists by creating a .placeholder file if it's empty.
-    Returns a tuple of (success_boolean, error_message_string).
     """
     if not folder_name.endswith('/'):
         folder_name += '/'
     try:
-        storage_client = storage.Client()
+        storage_client = get_storage_client()
         bucket = storage_client.bucket(bucket_name)
         blobs = list(bucket.list_blobs(prefix=folder_name, max_results=1))
         if not blobs:
@@ -27,14 +50,13 @@ def ensure_gcs_folder_exists(bucket_name: str, folder_name: str) -> Tuple[bool, 
 def list_gcs_files(bucket_name: str, prefix: str = "", allowed_extensions: List[str] = None) -> Tuple[List[str], str]:
     """
     Lists files in a GCS bucket with a given prefix and optional extension filtering.
-    Returns a tuple of (file_list, error_message_string).
     """
     files = []
     if prefix and not prefix.endswith('/'):
         prefix += '/'
 
     try:
-        storage_client = storage.Client()
+        storage_client = get_storage_client()
         bucket = storage_client.bucket(bucket_name)
         if not bucket.exists():
             return [], f"Bucket '{bucket_name}' does not exist or you don't have access."
@@ -45,7 +67,6 @@ def list_gcs_files(bucket_name: str, prefix: str = "", allowed_extensions: List[
 
         blobs = bucket.list_blobs(prefix=prefix)
         for blob in blobs:
-            # Skip placeholder files
             if blob.name == f"{prefix}.gcs_folder_placeholder" or blob.name.endswith('/'):
                 continue
             
@@ -68,14 +89,12 @@ def list_gcs_files(bucket_name: str, prefix: str = "", allowed_extensions: List[
 def download_gcs_blob(bucket_name: str, source_blob_name: str, destination_file_name: str) -> Tuple[bool, str]:
     """
     Downloads a blob from the bucket to a local file.
-    Returns a tuple of (success_boolean, error_message_string).
     """
     try:
-        storage_client = storage.Client()
+        storage_client = get_storage_client()
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(source_blob_name)
         
-        # Create local directory if it doesn't exist
         destination_dir = os.path.dirname(destination_file_name)
         if destination_dir:
             os.makedirs(destination_dir, exist_ok=True)
@@ -90,10 +109,9 @@ def download_gcs_blob(bucket_name: str, source_blob_name: str, destination_file_
 def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_name: str) -> Tuple[bool, str]:
     """
     Uploads a file to the bucket.
-    Returns a tuple of (success_boolean, error_message_string).
     """
     try:
-        storage_client = storage.Client()
+        storage_client = get_storage_client()
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(destination_blob_name)
         blob.upload_from_filename(source_file_name)
@@ -102,3 +120,27 @@ def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_na
         error_msg = f"Error uploading {source_file_name} to GCS blob gs://{bucket_name}/{destination_blob_name}: {e}"
         print(error_msg)
         return False, error_msg
+
+def generate_signed_url(bucket_name: str, blob_name: str) -> Tuple[str, str]:
+    """
+    Generates a signed URL for a GCS blob using the service account.
+    """
+    try:
+        storage_client = get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        # URL is valid for 1 hour
+        expiration_time = datetime.timedelta(hours=1)
+        
+        # The client, initialized via get_storage_client, now has the service account key
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=expiration_time,
+            method="GET",
+        )
+        return url, ""
+    except Exception as e:
+        error_msg = f"Error generating signed URL for gs://{bucket_name}/{blob_name}: {e}"
+        print(error_msg)
+        return "", error_msg

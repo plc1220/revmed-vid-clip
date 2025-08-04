@@ -2,6 +2,10 @@ import streamlit as st
 import os
 import sys
 import requests
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # --- Tab Imports ---
 from tabs.tab1_video_split import render_tab1

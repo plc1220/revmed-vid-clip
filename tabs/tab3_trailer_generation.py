@@ -3,7 +3,7 @@ import os
 import re
 import requests
 import time
-from google.cloud import storage
+from services.gcs_service import generate_signed_url
 from typing import Optional
 
 # Define the base URL for the backend API
@@ -19,50 +19,73 @@ def render_tab3(gcs_bucket_name_param: str):
         st.session_state.clips_job_status = None
     if "clips_job_details" not in st.session_state:
         st.session_state.clips_job_details = ""
+    if "generated_clips_list" not in st.session_state:
+        st.session_state.generated_clips_list = []
 
     # --- GCS Metadata File Listing ---
-    st.subheader(f"Select Metadata File from gs://{gcs_bucket_name_param}/metadata/")
+    st.subheader(f"Select Metadata Files from gs://{gcs_bucket_name_param}/metadata/")
     metadata_gcs_prefix = "metadata/"
-    gcs_metadata_files_options = ["-- Select a metadata file --"]
+    gcs_metadata_files = []
     
     if gcs_bucket_name_param:
         try:
-            storage_client = storage.Client()
+            from services.gcs_service import get_storage_client
+            storage_client = get_storage_client()
             bucket = storage_client.bucket(gcs_bucket_name_param)
-            actual_files = [b.name for b in bucket.list_blobs(prefix=metadata_gcs_prefix) if not b.name.endswith('/')]
-            actual_files.sort()
-            gcs_metadata_files_options.extend(actual_files)
+            gcs_metadata_files = sorted([
+                b.name for b in bucket.list_blobs(prefix=metadata_gcs_prefix)
+                if not b.name.endswith('/') and b.name.lower().endswith('.json')
+            ])
         except Exception as e:
             st.error(f"Error listing metadata files from GCS: {e}")
 
-    selected_metadata_file = st.selectbox(
-        "Choose a metadata file to use for clip generation:",
-        options=gcs_metadata_files_options,
-        key="selectbox_gcs_metadata_file_tab3"
-    )
+    if not gcs_metadata_files:
+        st.warning(f"No metadata (.json) files found in 'gs://{gcs_bucket_name_param}/{metadata_gcs_prefix}'. Please generate metadata in Step 2.")
+        return
 
-    if selected_metadata_file and selected_metadata_file != "-- Select a metadata file --":
-        st.success(f"Selected metadata file: `{selected_metadata_file}`")
-        
-        # In a real app, you might show a preview of the metadata here.
-        # For now, we'll proceed directly to the generation step.
+    # Initialize or update selection state
+    if 'metadata_selection' not in st.session_state:
+        st.session_state.metadata_selection = {}
 
-        st.markdown("---")
-        st.subheader("AI Clip Selection (Optional)")
-        ai_prompt = st.text_area(
-            "Enter a prompt for the AI to select the best clips for a trailer:",
-            value="Create a 90-second trailer focusing on the main conflict.",
-            height=150,
-            key="ai_clip_prompt_tab3"
+    current_selection = st.session_state.metadata_selection.copy()
+    st.session_state.metadata_selection = {uri: current_selection.get(uri, False) for uri in gcs_metadata_files}
+
+    # --- Selection Controls ---
+    col1, col2, _ = st.columns([0.15, 0.15, 0.7])
+    with col1:
+        if st.button("Select All", key="select_all_metadata"):
+            for uri in gcs_metadata_files:
+                st.session_state.metadata_selection[uri] = True
+            st.rerun()
+    with col2:
+        if st.button("Deselect All", key="deselect_all_metadata"):
+            for uri in gcs_metadata_files:
+                st.session_state.metadata_selection[uri] = False
+            st.rerun()
+
+    # --- Metadata File List with Checkboxes ---
+    st.write("Choose metadata files to use for clip generation:")
+    for uri in gcs_metadata_files:
+        is_selected = st.checkbox(
+            os.path.basename(uri),
+            value=st.session_state.metadata_selection.get(uri, False),
+            key=f"cb_meta_{uri}"
         )
+        st.session_state.metadata_selection[uri] = is_selected
 
+    selected_metadata_files = [uri for uri, selected in st.session_state.metadata_selection.items() if selected]
+
+    if selected_metadata_files:
+        st.success(f"Selected {len(selected_metadata_files)} metadata file(s).")
+        
+        st.markdown("---")
         output_gcs_prefix = st.text_input(
             "GCS Prefix for Output Clips:",
             value="clips/",
             key="output_gcs_prefix_tab3"
         )
 
-        if st.button("✨ Generate Clips via API", key="generate_clips_button_tab3"):
+        if st.button("✨ Generate Clips for Selected Files", key="generate_clips_button_tab3"):
             if not output_gcs_prefix:
                 st.warning("Please provide a GCS prefix for the output clips.")
                 return
@@ -70,14 +93,13 @@ def render_tab3(gcs_bucket_name_param: str):
             st.session_state.clips_job_id = None
             st.session_state.clips_job_status = "starting"
             st.session_state.clips_job_details = "Initializing clip generation job..."
+            st.session_state.generated_clips_list = [] # Clear previous results
 
             try:
                 api_url = f"{API_BASE_URL}/generate-clips/"
                 payload = {
                     "gcs_bucket": gcs_bucket_name_param,
-                    "metadata_blob_name": selected_metadata_file,
-                    "ai_prompt": ai_prompt,
-                    "ai_model_name": st.session_state.get("AI_MODEL_NAME", "gemini-pro"), # Get from global config
+                    "metadata_blob_names": selected_metadata_files,
                     "output_gcs_prefix": output_gcs_prefix
                 }
                 response = requests.post(api_url, json=payload)
@@ -111,9 +133,10 @@ def render_tab3(gcs_bucket_name_param: str):
                 st.session_state.clips_job_details = job_data.get("details")
 
                 if st.session_state.clips_job_status == "completed":
-                    status_placeholder.success(f"✅ **Job Complete:** {st.session_state.clips_job_details}")
+                    status_placeholder.success(f"✅ **Job Complete:** {job_data.get('details')}")
+                    st.session_state.generated_clips_list = job_data.get("generated_clips", [])
                     st.session_state.clips_job_id = None
-                    break
+                    st.rerun()
                 elif st.session_state.clips_job_status == "failed":
                     status_placeholder.error(f"❌ **Job Failed:** {st.session_state.clips_job_details}")
                     st.session_state.clips_job_id = None
@@ -126,4 +149,32 @@ def render_tab3(gcs_bucket_name_param: str):
                 break
             
             time.sleep(5)
+
+    # --- Display Generated Clips ---
+    if st.session_state.get("generated_clips_list"):
+        st.markdown("---")
+        st.subheader("✅ Generated Clips")
+
+        # In a real app, you'd get these from a config or the API
+        gcs_bucket_name = gcs_bucket_name_param
+
+        for clip_blob_name in st.session_state.generated_clips_list:
+            try:
+                # This assumes gcs_service is available here or we call it differently
+                # For simplicity, let's assume a helper function can be called
+                # In a real app, you might need to adjust how you get the signed URL
+                signed_url, error = generate_signed_url(gcs_bucket_name, clip_blob_name)
+                
+                if error:
+                    st.error(f"Could not get URL for `{os.path.basename(clip_blob_name)}`: {error}")
+                else:
+                    st.video(signed_url)
+                    st.caption(os.path.basename(clip_blob_name))
+
+            except Exception as e:
+                st.error(f"An error occurred while trying to display the video `{os.path.basename(clip_blob_name)}`: {e}")
+
+        if st.button("Clear Generated Clips", key="clear_clips_button"):
+            st.session_state.generated_clips_list = []
+            st.rerun()
 

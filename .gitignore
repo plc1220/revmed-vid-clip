@@ -21,3 +21,4 @@ test.mp4
 # Tooling
 .roo/
 .streamlit/
+*.swp
