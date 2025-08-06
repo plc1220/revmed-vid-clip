@@ -16,7 +16,7 @@ from tabs.tab5_generate_clips_ai import render_tab5
 
 # --- App Configuration ---
 st.set_page_config(layout="wide")
-st.title("🎬 Rev-Med Video Assistant")
+st.title("🎬 Rev-Media Video Assistant")
 
 # --- Global Configuration and Session State Initialization ---
 CONFIG_KEYS = {
@@ -33,59 +33,59 @@ for key, default_value in CONFIG_KEYS.items():
     if key not in st.session_state:
         st.session_state[key] = default_value
 
-# --- Sidebar for Global Settings ---
-st.sidebar.header("⚙️ Global Configurations")
+# # --- Sidebar for Global Settings ---
+# st.sidebar.header("⚙️ Global Configurations")
 
-st.session_state.GCS_BUCKET_NAME = st.sidebar.text_input(
-    "GCS Bucket Name:",
-    value=st.session_state.GCS_BUCKET_NAME,
-    key="cfg_gcs_bucket_name"
-)
-st.session_state.GEMINI_API_KEY = st.sidebar.text_input(
-    "Gemini API Key:",
-    value=st.session_state.GEMINI_API_KEY,
-    type="password",
-    key="cfg_gemini_api_key"
-)
-st.session_state.AI_MODEL_NAME = st.sidebar.text_input(
-    "AI Model Name:",
-    value=st.session_state.AI_MODEL_NAME,
-    key="cfg_ai_model_name"
-)
-st.session_state.API_BASE_URL = st.sidebar.text_input(
-    "Backend API URL:",
-    value=st.session_state.API_BASE_URL,
-    key="cfg_api_base_url"
-)
+# st.session_state.GCS_BUCKET_NAME = st.sidebar.text_input(
+#     "GCS Bucket Name:",
+#     value=st.session_state.GCS_BUCKET_NAME,
+#     key="cfg_gcs_bucket_name"
+# )
+# st.session_state.GEMINI_API_KEY = st.sidebar.text_input(
+#     "Gemini API Key:",
+#     value=st.session_state.GEMINI_API_KEY,
+#     type="password",
+#     key="cfg_gemini_api_key"
+# )
+# st.session_state.AI_MODEL_NAME = st.sidebar.text_input(
+#     "AI Model Name:",
+#     value=st.session_state.AI_MODEL_NAME,
+#     key="cfg_ai_model_name"
+# )
+# st.session_state.API_BASE_URL = st.sidebar.text_input(
+#     "Backend API URL:",
+#     value=st.session_state.API_BASE_URL,
+#     key="cfg_api_base_url"
+# )
 
-st.sidebar.subheader("GCS Folder Prefixes")
-st.session_state.GCS_PROCESSED_VIDEO_PREFIX = st.sidebar.text_input(
-    "Processed Videos Prefix:",
-    value=st.session_state.GCS_PROCESSED_VIDEO_PREFIX,
-    key="cfg_gcs_processed_video_prefix"
-)
-st.session_state.GCS_METADATA_PREFIX = st.sidebar.text_input(
-    "Metadata Prefix:",
-    value=st.session_state.GCS_METADATA_PREFIX,
-    key="cfg_gcs_metadata_prefix"
-)
-st.session_state.GCS_OUTPUT_CLIPS_PREFIX = st.sidebar.text_input(
-    "Output Clips Prefix:",
-    value=st.session_state.GCS_OUTPUT_CLIPS_PREFIX,
-    key="cfg_gcs_output_clips_prefix"
-)
+# st.sidebar.subheader("GCS Folder Prefixes")
+# st.session_state.GCS_PROCESSED_VIDEO_PREFIX = st.sidebar.text_input(
+#     "Processed Videos Prefix:",
+#     value=st.session_state.GCS_PROCESSED_VIDEO_PREFIX,
+#     key="cfg_gcs_processed_video_prefix"
+# )
+# st.session_state.GCS_METADATA_PREFIX = st.sidebar.text_input(
+#     "Metadata Prefix:",
+#     value=st.session_state.GCS_METADATA_PREFIX,
+#     key="cfg_gcs_metadata_prefix"
+# )
+# st.session_state.GCS_OUTPUT_CLIPS_PREFIX = st.sidebar.text_input(
+#     "Output Clips Prefix:",
+#     value=st.session_state.GCS_OUTPUT_CLIPS_PREFIX,
+#     key="cfg_gcs_output_clips_prefix"
+# )
 
 # --- Health Check for Backend API ---
-api_ready = False
-try:
-    response = requests.get(f"{st.session_state.API_BASE_URL}/")
-    if response.status_code == 200:
-        api_ready = True
-        st.sidebar.success("✅ Backend API is connected.")
-    else:
-        st.sidebar.error(f"❌ Backend API returned status {response.status_code}.")
-except requests.exceptions.ConnectionError:
-    st.sidebar.error("❌ Backend API is not reachable.")
+# api_ready = False
+# try:
+#     response = requests.get(f"{st.session_state.API_BASE_URL}/")
+#     if response.status_code == 200:
+#         api_ready = True
+#         st.sidebar.success("✅ Backend API is connected.")
+#     else:
+#         st.sidebar.error(f"❌ Backend API returned status {response.status_code}.")
+# except requests.exceptions.ConnectionError:
+#     st.sidebar.error("❌ Backend API is not reachable.")
 
 # --- Main Application Tabs ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs([

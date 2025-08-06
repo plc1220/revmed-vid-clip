@@ -13,15 +13,16 @@ def get_storage_client() -> storage.Client:
     """
     global _storage_client
     if _storage_client is None:
+        credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path:
+            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+        
         try:
-            # Explicitly use credentials from the environment variable
-            _storage_client = storage.Client.from_service_account_json(
-                os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-            )
+            _storage_client = storage.Client.from_service_account_json(credentials_path)
         except Exception as e:
-            print(f"Error initializing GCS client from service account: {e}")
-            # Fallback to default client if service account fails
-            _storage_client = storage.Client()
+            # Re-raise the exception to make it clear that initialization failed
+            raise IOError(f"Failed to initialize GCS client from service account file: {credentials_path}") from e
+            
     return _storage_client
 
 # --- GCS Helper Functions ---

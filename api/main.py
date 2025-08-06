@@ -254,7 +254,10 @@ async def process_metadata_generation(job_id: str, request: MetadataRequest):
             shutil.rmtree(job_temp_dir)
 
 def process_clip_generation(job_id: str, request: ClipGenerationRequest):
-    """The actual logic for the clip generation background task."""
+    """
+    The actual logic for the clip generation background task.
+    This optimized version groups clips by source video to download each video only once.
+    """
     _write_job(job_id, {"status": "in_progress", "details": "Starting clip generation."})
     print(f"Job {job_id}: Starting clip generation from {len(request.metadata_blob_names)} metadata file(s).")
 
@@ -263,82 +266,70 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
     
     total_processed_clips_count = 0
     generated_clips_paths = []
+    clips_by_source_video = {} # Key: source_blob_name, Value: list of clip_data
 
     try:
-        # Configure AI Service once
-        # Configure AI Service once
-        # The AI service is now configured automatically via environment variables.
-        # No explicit configuration call is needed.
+        # --- Step 1: Aggregate all clips from metadata files and group by source video ---
+        _write_job(job_id, {"status": "in_progress", "details": "Aggregating and grouping clips from metadata..."})
+        print(f"Job {job_id}: Aggregating clips from {len(request.metadata_blob_names)} metadata files.")
 
         for metadata_blob_name in request.metadata_blob_names:
-            _write_job(job_id, {"status": "in_progress", "details": f"Processing metadata file: {metadata_blob_name}"})
-            print(f"Job {job_id}: Processing metadata file: {metadata_blob_name}")
-
-            # 1. Download metadata file from GCS
             local_metadata_path = os.path.join(job_temp_dir, os.path.basename(metadata_blob_name))
             success, error = gcs_service.download_gcs_blob(request.gcs_bucket, metadata_blob_name, local_metadata_path)
             if not success:
-                print(f"Job {job_id}: Failed to download metadata file {metadata_blob_name}. Skipping. Error: {error}")
+                print(f"Job {job_id}: Failed to download metadata {metadata_blob_name}. Skipping. Error: {error}")
                 continue
 
             with open(local_metadata_path, 'r') as f:
                 metadata_content = f.read()
 
-            # 2. Directly parse clips from the metadata
             try:
                 if metadata_content.strip().startswith("```json"):
                     metadata_content = metadata_content.strip()[7:-3]
                 selected_clips = json.loads(metadata_content)
                 if not isinstance(selected_clips, list):
-                     # If it's a dictionary, wrap it in a list
-                    if isinstance(selected_clips, dict):
-                        selected_clips = [selected_clips]
+                    selected_clips = [selected_clips] if isinstance(selected_clips, dict) else []
+
+                for clip_data in selected_clips:
+                    source_gcs_uri = clip_data.get("source_filename")
+                    if not source_gcs_uri:
+                        continue
+                    
+                    # Parse GCS URI to get blob name
+                    if source_gcs_uri.startswith(f"gs://{request.gcs_bucket}/"):
+                        source_blob_name = source_gcs_uri.split(f"gs://{request.gcs_bucket}/", 1)[1]
+                        if source_blob_name not in clips_by_source_video:
+                            clips_by_source_video[source_blob_name] = []
+                        clips_by_source_video[source_blob_name].append(clip_data)
                     else:
-                        raise ValueError("Metadata is not a valid JSON list or object.")
+                        print(f"Job {job_id}: Skipping clip with invalid or mismatched GCS URI: {source_gcs_uri}")
+
             except (json.JSONDecodeError, ValueError) as e:
-                print(f"Job {job_id}: Invalid JSON in metadata file {metadata_blob_name}. Error: {e}")
+                print(f"Job {job_id}: Invalid JSON in {metadata_blob_name}. Error: {e}")
+                continue
+        
+        # --- Step 2: Process clips for each source video ---
+        total_source_videos = len(clips_by_source_video)
+        print(f"Job {job_id}: Found {sum(len(c) for c in clips_by_source_video.values())} clips to generate from {total_source_videos} unique source videos.")
+
+        for i, (source_blob_name, clips_to_create) in enumerate(clips_by_source_video.items()):
+            details = f"Processing source video {i+1}/{total_source_videos}: {source_blob_name}"
+            _write_job(job_id, {"status": "in_progress", "details": details})
+            print(f"Job {job_id}: {details}")
+
+            # Download the source video ONCE
+            local_video_path = os.path.join(job_temp_dir, os.path.basename(source_blob_name))
+            print(f"Job {job_id}: Downloading source video: gs://{request.gcs_bucket}/{source_blob_name}")
+            success, error = gcs_service.download_gcs_blob(request.gcs_bucket, source_blob_name, local_video_path)
+            if not success:
+                print(f"Job {job_id}: Failed to download {source_blob_name}. Skipping all clips for this video. Error: {error}")
                 continue
 
-            if not selected_clips:
-                print(f"Job {job_id}: AI did not select any clips from {metadata_blob_name}.")
-                continue
-
-            # 3. Process each selected clip
-            for i, clip_data in enumerate(selected_clips):
-                # Use 'source_filename' (which now contains the correct GCS URI) and 'timestamp_start_end'
-                source_gcs_uri = clip_data.get("source_filename")
+            # Create all clips from this one downloaded video
+            for clip_data in clips_to_create:
                 time_range = clip_data.get("timestamp_start_end")
-
-                if not source_gcs_uri or not time_range:
-                    print(f"Job {job_id}: Skipping clip with missing 'source_filename' or 'timestamp_start_end': {clip_data}")
-                    continue
-
-                # Parse the GCS URI to get the blob name
-                try:
-                    if source_gcs_uri.startswith("gs://"):
-                        # Expected format: gs://<bucket_name>/<blob_name>
-                        parts = source_gcs_uri[5:].split('/', 1)
-                        source_bucket_name = parts[0]
-                        source_blob_name = parts[1]
-                        if source_bucket_name != request.gcs_bucket:
-                             print(f"Job {job_id}: Mismatch between request bucket ({request.gcs_bucket}) and source URI bucket ({source_bucket_name}). Skipping.")
-                             continue
-                    else:
-                        raise ValueError("Invalid GCS URI format.")
-                except (ValueError, IndexError) as e:
-                    print(f"Job {job_id}: Could not parse source GCS URI '{source_gcs_uri}'. Error: {e}. Skipping.")
-                    continue
-
-                details = f"Processing clip {i+1}/{len(selected_clips)} from {source_blob_name} ({time_range})"
-                _write_job(job_id, {"status": "in_progress", "details": details})
-                print(f"Job {job_id}: {details}")
-
-                # Download the source video segment using the correct blob name from the metadata
-                local_video_path = os.path.join(job_temp_dir, os.path.basename(source_blob_name))
-                print(f"Job {job_id}: Downloading source video: gs://{request.gcs_bucket}/{source_blob_name}")
-                success, error = gcs_service.download_gcs_blob(request.gcs_bucket, source_blob_name, local_video_path)
-                if not success:
-                    print(f"Job {job_id}: Failed to download source video {source_blob_name}. Skipping clip. Error: {error}")
+                if not time_range:
+                    print(f"Job {job_id}: Skipping clip with missing 'timestamp_start_end': {clip_data}")
                     continue
 
                 try:
@@ -366,8 +357,12 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
                 else:
                     total_processed_clips_count += 1
                     generated_clips_paths.append(clip_blob_name)
+            
+            # Clean up the downloaded source video to save space
+            if os.path.exists(local_video_path):
+                os.remove(local_video_path)
 
-        final_details = f"Successfully generated and uploaded {total_processed_clips_count} clips from {len(request.metadata_blob_names)} metadata file(s)."
+        final_details = f"Successfully generated and uploaded {total_processed_clips_count} clips from {len(clips_by_source_video)} unique videos."
         _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clips_paths})
         print(f"Job {job_id}: Clip generation completed.")
 

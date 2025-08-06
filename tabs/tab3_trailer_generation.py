@@ -3,7 +3,7 @@ import os
 import re
 import requests
 import time
-from services.gcs_service import generate_signed_url
+from services.gcs_service import generate_signed_url, list_gcs_files
 from typing import Optional
 
 # Define the base URL for the backend API
@@ -28,16 +28,14 @@ def render_tab3(gcs_bucket_name_param: str):
     gcs_metadata_files = []
     
     if gcs_bucket_name_param:
-        try:
-            from services.gcs_service import get_storage_client
-            storage_client = get_storage_client()
-            bucket = storage_client.bucket(gcs_bucket_name_param)
-            gcs_metadata_files = sorted([
-                b.name for b in bucket.list_blobs(prefix=metadata_gcs_prefix)
-                if not b.name.endswith('/') and b.name.lower().endswith('.json')
-            ])
-        except Exception as e:
-            st.error(f"Error listing metadata files from GCS: {e}")
+        gcs_metadata_files, error = list_gcs_files(
+            gcs_bucket_name_param,
+            metadata_gcs_prefix,
+            allowed_extensions=['.json']
+        )
+        if error:
+            st.error(f"Error listing metadata files from GCS: {error}")
+            gcs_metadata_files = []
 
     if not gcs_metadata_files:
         st.warning(f"No metadata (.json) files found in 'gs://{gcs_bucket_name_param}/{metadata_gcs_prefix}'. Please generate metadata in Step 2.")

@@ -3,7 +3,7 @@ import os
 import requests
 import time
 import datetime
-from google.cloud import storage
+from services.gcs_service import list_gcs_files, generate_signed_url
 
 # Define the base URL for the backend API
 API_BASE_URL = "http://127.0.0.1:8000"
@@ -14,21 +14,26 @@ def list_gcs_clips_for_display(bucket_name, prefix):
     This remains in the UI as it's for presentation, not processing.
     """
     try:
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
-        blobs = bucket.list_blobs(prefix=prefix)
+        allowed_extensions = ['.mp4', '.mov', '.avi', '.mkv']
+        blob_names, error = list_gcs_files(bucket_name, prefix, allowed_extensions)
+        if error:
+            return [], f"Error listing GCS clips: {error}"
+
         clips_data = []
-        for blob in blobs:
-            if blob.name.lower().endswith(('.mp4', '.mov', '.avi', '.mkv')) and not blob.name.endswith('/'):
-                url = blob.generate_signed_url(
-                    version="v4",
-                    expiration=datetime.timedelta(hours=1),
-                    method="GET",
-                )
-                clips_data.append({"name": blob.name, "filename": os.path.basename(blob.name), "url": url})
+        for blob_name in blob_names:
+            url, error = generate_signed_url(bucket_name, blob_name)
+            if error:
+                print(f"Could not generate signed URL for {blob_name}: {error}")
+                continue
+            
+            clips_data.append({
+                "name": blob_name,
+                "filename": os.path.basename(blob_name),
+                "url": url
+            })
         return clips_data, None
     except Exception as e:
-        return [], f"Error listing GCS clips: {e}"
+        return [], f"Error processing GCS clips for display: {e}"
 
 def render_tab4(gcs_bucket_name="your-gcs-bucket-name"):
     st.header("🎬 Video Stitcher")

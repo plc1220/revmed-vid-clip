@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import time
 import requests
-from google.cloud import storage
+from services.gcs_service import list_gcs_files, download_gcs_blob
 
 # Define the base URL for the backend API
 API_BASE_URL = "http://127.0.0.1:8000"
@@ -10,7 +10,7 @@ API_BASE_URL = "http://127.0.0.1:8000"
 # It's good to define it here so render_tab2 can use it as a default
 # for st.session_state.batch_prompt_text_area_content
 default_prompt_template = """
-You are a professional film and drama editor AI, equipped with multimodal understanding (visuals, dialogue, sound, and inferred emotion). Your task is to meticulously analyze the provided video content of an **appmaximum 10-minute video clip from a drama series.** Your goal is to identify multiple key moments suitable for constructing a dynamic and engaging 2-minute trailer from **this specific clip.**
+You are a professional film and drama editor AI, equipped with multimodal understanding (visuals, dialogue, sound, and inferred emotion). Your task is to meticulously analyze the provided video content from a drama series.** Your goal is to identify multiple key moments suitable for constructing a dynamic and engaging 2-minute trailer from **this specific clip.**
 
 For each potential trailer moment you identify **within this video clip**, extract and structure the following metadata. Be precise and insightful.
 
@@ -18,7 +18,7 @@ For each potential trailer moment you identify **within this video clip**, extra
 *   **Primary:** The video content of the drama clip named **`{{source_filename}}`**. This clip is **`{{actual_video_duration}}`** long. Make sure you only capture scenes within the actual length of *this specific video clip*.
 *   **Supplementary (if provided):** A transcript or scene-by-scene description. Your analysis should prioritize what is seen and heard in the video, using supplementary text to clarify or confirm dialogue and scene context if available.
 
-**Prioritize Moments That (within the ~10-minute clip):**
+**Prioritize Moments That:**
 *   Introduce key characters effectively.
 *   Establish the central conflict or mystery.
 (Rest of the prioritization list)
@@ -31,7 +31,7 @@ Provide your response as a single, valid JSON array. Each element in the array s
     *   Example: "cinta-buat-dara-S1E1_part1.mp4"
 2.  **`timestamp_start_end`**:
     *   Description: Precise in and out points for the clip (HH:MM:SS - HH:MM:SS) **relative to the start of the provided video file.** Aim for clips 2-15 seconds long. **All timestamps (both start and end) MUST be within the actual duration of the input video clip `source_filename`. Do not generate timestamps exceeding the video's length.**
-    *   Example: "00:02:15 - 00:02:30" (This would be valid for a 10-minute clip, but "00:12:00 - 00:12:10" would be invalid).
+    *   Example: "00:02:15 - 00:02:30".
 3.  **`editor_note_clip_rationale`**:
     *   Description: Your rationale for selecting this clip. Why is it trailer-worthy? (Max 30 words)
     *   Example: "The mother threatens Dara's prized possession, creating a cliffhanger for her rebellious streak and showcasing immediate conflict."
@@ -113,21 +113,19 @@ def render_tab2(
     if not gcs_bucket_name_param:
         st.error("GCS Bucket name for videos not provided.")
     else:
-        try:
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(gcs_bucket_name_param)
-            blobs = bucket.list_blobs(prefix="segments/")
-            # Filter for allowed video extensions
-            gcs_video_uris = sorted([
-                f"gs://{gcs_bucket_name_param}/{blob.name}"
-                for blob in blobs
-                if any(blob.name.lower().endswith(ext) for ext in allowed_video_extensions_global)
-            ])
+        blob_names, error = list_gcs_files(
+            gcs_bucket_name_param,
+            "segments/",
+            allowed_extensions=allowed_video_extensions_global
+        )
+        if error:
+            st.error(f"Error listing segment files from GCS: {error}")
+            gcs_video_uris = []
+        else:
+            gcs_video_uris = [f"gs://{gcs_bucket_name_param}/{name}" for name in blob_names]
 
-            if not gcs_video_uris:
-                st.warning(f"No video segment files found in 'gs://{gcs_bucket_name_param}/segments/'. Please split a video in Step 1.")
-        except Exception as e:
-            st.error(f"Error listing segment files from GCS: {e}")
+        if not gcs_video_uris:
+            st.warning(f"No video segment files found in 'gs://{gcs_bucket_name_param}/segments/'. Please split a video in Step 1.")
 
     if gcs_video_uris:
         st.success(f"Found {len(gcs_video_uris)} video segment file(s).")
@@ -266,15 +264,24 @@ def render_tab2(
                             gcs_path_str = gcs_uri.split("gs://")[1]
                             gcs_bucket_name, gcs_blob_name = gcs_path_str.split('/', 1)
                             
-                            storage_client = storage.Client()
-                            bucket = storage_client.bucket(gcs_bucket_name)
-                            blob = bucket.blob(gcs_blob_name)
-                            
-                            metadata_content = blob.download_as_string().decode('utf-8')
-                            st.session_state.viewed_metadata_content[file_basename] = metadata_content
-                            st.rerun() # Rerun to display the loaded content
+                            # Create a temporary file path
+                            temp_dir = "temp_metadata"
+                            os.makedirs(temp_dir, exist_ok=True)
+                            local_file_path = os.path.join(temp_dir, file_basename)
+
+                            # Use the GCS service to download
+                            success, error = download_gcs_blob(gcs_bucket_name, gcs_blob_name, local_file_path)
+
+                            if success:
+                                with open(local_file_path, 'r', encoding='utf-8') as f:
+                                    metadata_content = f.read()
+                                st.session_state.viewed_metadata_content[file_basename] = metadata_content
+                                os.remove(local_file_path) # Clean up the temp file
+                                st.rerun() # Rerun to display the loaded content
+                            else:
+                                st.error(f"Failed to download {file_basename} from GCS. Error: {error}")
                         except Exception as e:
-                            st.error(f"Failed to download {file_basename} from GCS. Error: {e}")
+                            st.error(f"An unexpected error occurred: {e}")
 
         if st.button("Clear All Results", key="clear_metadata_results_button"):
             st.session_state.generated_metadata_files = []

@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import requests
 import time
-from google.cloud import storage
+from services.gcs_service import list_gcs_files
 
 # Define the base URL for the backend API
 API_BASE_URL = "http://127.0.0.1:8000"
@@ -34,14 +34,15 @@ def render_tab5(
     gcs_metadata_files_options = ["-- Select a metadata file --"]
     
     if gcs_bucket_name_param:
-        try:
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(gcs_bucket_name_param)
-            actual_files = [b.name for b in bucket.list_blobs(prefix=gcs_metadata_prefix_param) if not b.name.endswith('/')]
-            actual_files.sort()
+        actual_files, error = list_gcs_files(
+            gcs_bucket_name_param,
+            gcs_metadata_prefix_param,
+            allowed_extensions=['.json']
+        )
+        if error:
+            st.error(f"Error listing metadata files from GCS: {error}")
+        else:
             gcs_metadata_files_options.extend(actual_files)
-        except Exception as e:
-            st.error(f"Error listing metadata files from GCS: {e}")
 
     selected_metadata_file = st.selectbox(
         "Choose a metadata file to use for clip generation:",
