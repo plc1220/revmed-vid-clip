@@ -102,6 +102,12 @@ The application requires both the backend and frontend servers to be running sim
     ```
     The UI will be accessible in your browser, typically at `http://localhost:8501`.
 
+## Deployment
+
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/your-github-username/your-repo-name.git&cloudshell_tutorial=README.md)
+
+Click the button above to deploy this application to Google Cloud Run. This will open Google Cloud Shell, clone the repository, and guide you through the deployment process.
+
 ## API Documentation (Swagger UI)
 
 The FastAPI backend automatically generates interactive API documentation using Swagger UI. This is the best place to explore and test the API endpoints directly.
