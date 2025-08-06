@@ -8,17 +8,14 @@ from services.gcs_service import list_gcs_files
 API_BASE_URL = "http://127.0.0.1:8000"
 
 def render_tab5(
-    gcs_bucket_name_param: str,
     gemini_api_key_param: str,
     ai_model_name_param: str,
-    temp_clips_output_dir_param: str,
-    temp_ai_clips_individual_output_dir_param: str,
-    temp_ai_video_joined_output_dir_param: str,
-    gcs_processed_video_prefix_param: str,
-    gcs_metadata_prefix_param: str,
-    gcs_output_clips_prefix_param: str,
     gemini_ready_param: bool
 ):
+    gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
+    workspace = st.session_state.workspace
+    metadata_gcs_prefix = os.path.join(workspace, st.session_state.GCS_METADATA_PREFIX)
+    output_clips_prefix = st.session_state.GCS_OUTPUT_CLIPS_PREFIX
     st.header("Step 5: Generate Clips with AI")
 
     # Initialize session state
@@ -30,13 +27,13 @@ def render_tab5(
         st.session_state.ai_clips_job_details = ""
 
     # --- GCS Metadata File Listing ---
-    st.subheader(f"Select Metadata File from gs://{gcs_bucket_name_param}/{gcs_metadata_prefix_param}")
+    st.subheader(f"Select Metadata File from gs://{gcs_bucket_name}/{metadata_gcs_prefix}")
     gcs_metadata_files_options = ["-- Select a metadata file --"]
     
-    if gcs_bucket_name_param:
+    if gcs_bucket_name:
         actual_files, error = list_gcs_files(
-            gcs_bucket_name_param,
-            gcs_metadata_prefix_param,
+            gcs_bucket_name,
+            metadata_gcs_prefix,
             allowed_extensions=['.json']
         )
         if error:
@@ -70,11 +67,10 @@ def render_tab5(
             try:
                 api_url = f"{API_BASE_URL}/generate-clips/"
                 payload = {
-                    "gcs_bucket": gcs_bucket_name_param,
-                    "metadata_blob_name": selected_metadata_file,
-                    "ai_prompt": ai_prompt,
-                    "ai_model_name": ai_model_name_param,
-                    "output_gcs_prefix": gcs_output_clips_prefix_param
+                    "workspace": workspace,
+                    "gcs_bucket": gcs_bucket_name,
+                    "metadata_blob_names": [selected_metadata_file], # API expects a list
+                    "output_gcs_prefix": output_clips_prefix
                 }
                 response = requests.post(api_url, json=payload)
                 response.raise_for_status()

@@ -121,6 +121,24 @@ def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_na
         error_msg = f"Error uploading {source_file_name} to GCS blob gs://{bucket_name}/{destination_blob_name}: {e}"
         print(error_msg)
         return False, error_msg
+def delete_gcs_blob(bucket_name: str, blob_name: str) -> Tuple[bool, str]:
+    """
+    Deletes a blob from the bucket.
+    """
+    try:
+        storage_client = get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        
+        if not blob.exists():
+            return False, f"Blob gs://{bucket_name}/{blob_name} not found."
+            
+        blob.delete()
+        return True, ""
+    except Exception as e:
+        error_msg = f"Error deleting GCS blob gs://{bucket_name}/{blob_name}: {e}"
+        print(error_msg)
+        return False, error_msg
 
 def generate_signed_url(bucket_name: str, blob_name: str) -> Tuple[str, str]:
     """
@@ -145,3 +163,56 @@ def generate_signed_url(bucket_name: str, blob_name: str) -> Tuple[str, str]:
         error_msg = f"Error generating signed URL for gs://{bucket_name}/{blob_name}: {e}"
         print(error_msg)
         return "", error_msg
+
+def list_workspaces(bucket_name: str) -> Tuple[List[str], str]:
+    """
+    Lists top-level 'folders' in a GCS bucket, which represent workspaces.
+    """
+    try:
+        storage_client = get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+        if not bucket.exists():
+            return [], f"Bucket '{bucket_name}' does not exist or you don't have access."
+
+        # Use a delimiter to find top-level "directories"
+        iterator = bucket.list_blobs(delimiter='/')
+        # The prefixes property of the iterator's pages contains the "folder" names
+        workspaces = [prefix for page in iterator.pages for prefix in page.prefixes]
+        
+        # Clean up the names (remove trailing slash)
+        workspaces = [w.strip('/') for w in workspaces]
+        
+        return sorted(workspaces), ""
+    except Exception as e:
+        error_message = f"Error listing workspaces in gs://{bucket_name}/: {e}"
+        print(f"GCS Error: {error_message}")
+        return [], error_message
+
+def create_workspace(bucket_name: str, workspace_name: str) -> Tuple[bool, str]:
+    """
+    Creates a new workspace by creating its required sub-folders in GCS.
+    """
+    if not workspace_name:
+        return False, "Workspace name cannot be empty."
+
+    # Define the folder structure for a new workspace
+    required_folders = [
+        f"{workspace_name}/",
+        f"{workspace_name}/uploads/",
+        f"{workspace_name}/segments/",
+        f"{workspace_name}/metadata/",
+        f"{workspace_name}/clips/"
+    ]
+    
+    try:
+        for folder in required_folders:
+            success, error = ensure_gcs_folder_exists(bucket_name, folder)
+            if not success:
+                # If one folder fails, stop and return the error
+                return False, f"Failed to create folder '{folder}': {error}"
+        
+        return True, f"Workspace '{workspace_name}' created successfully."
+    except Exception as e:
+        error_msg = f"An unexpected error occurred while creating workspace '{workspace_name}': {e}"
+        print(error_msg)
+        return False, error_msg

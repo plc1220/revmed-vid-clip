@@ -6,7 +6,7 @@ import time
 # Define the base URL for the backend API
 API_BASE_URL = "http://127.0.0.1:8000"
 
-def render_tab1(temp_split_output_dir_param: str, allowed_video_extensions_param: list):
+def render_tab1(allowed_video_extensions_param: list):
     st.header("Step 1: Video Split")
 
     st.info(
@@ -54,7 +54,10 @@ def render_tab1(temp_split_output_dir_param: str, allowed_video_extensions_param
                 with st.spinner(f"Uploading {uploaded_file.name} to the server..."):
                     upload_url = f"{API_BASE_URL}/upload-video/"
                     files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                    data = {'gcs_bucket': gcs_bucket}
+                    data = {
+                        'gcs_bucket': gcs_bucket,
+                        'workspace': st.session_state.workspace
+                    }
                     
                     upload_response = requests.post(upload_url, files=files, data=data)
                     upload_response.raise_for_status()
@@ -67,6 +70,7 @@ def render_tab1(temp_split_output_dir_param: str, allowed_video_extensions_param
                 with st.spinner("Starting video splitting job..."):
                     split_url = f"{API_BASE_URL}/split-video/"
                     payload = {
+                        "workspace": st.session_state.workspace,
                         "gcs_bucket": gcs_bucket,
                         "gcs_blob_name": gcs_blob_name_from_api,
                         "segment_duration": segment_duration_min * 60

@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import sys
 import requests
 from dotenv import load_dotenv
 
@@ -33,105 +32,100 @@ for key, default_value in CONFIG_KEYS.items():
     if key not in st.session_state:
         st.session_state[key] = default_value
 
-# # --- Sidebar for Global Settings ---
-# st.sidebar.header("⚙️ Global Configurations")
+# Initialize workspace state
+if "workspace" not in st.session_state:
+    st.session_state.workspace = None
 
-# st.session_state.GCS_BUCKET_NAME = st.sidebar.text_input(
-#     "GCS Bucket Name:",
-#     value=st.session_state.GCS_BUCKET_NAME,
-#     key="cfg_gcs_bucket_name"
-# )
-# st.session_state.GEMINI_API_KEY = st.sidebar.text_input(
-#     "Gemini API Key:",
-#     value=st.session_state.GEMINI_API_KEY,
-#     type="password",
-#     key="cfg_gemini_api_key"
-# )
-# st.session_state.AI_MODEL_NAME = st.sidebar.text_input(
-#     "AI Model Name:",
-#     value=st.session_state.AI_MODEL_NAME,
-#     key="cfg_ai_model_name"
-# )
-# st.session_state.API_BASE_URL = st.sidebar.text_input(
-#     "Backend API URL:",
-#     value=st.session_state.API_BASE_URL,
-#     key="cfg_api_base_url"
-# )
+def render_main_app():
+    """Renders the main application tabs."""
+    st.header(f"Workspace: `{st.session_state.workspace}`")
 
-# st.sidebar.subheader("GCS Folder Prefixes")
-# st.session_state.GCS_PROCESSED_VIDEO_PREFIX = st.sidebar.text_input(
-#     "Processed Videos Prefix:",
-#     value=st.session_state.GCS_PROCESSED_VIDEO_PREFIX,
-#     key="cfg_gcs_processed_video_prefix"
-# )
-# st.session_state.GCS_METADATA_PREFIX = st.sidebar.text_input(
-#     "Metadata Prefix:",
-#     value=st.session_state.GCS_METADATA_PREFIX,
-#     key="cfg_gcs_metadata_prefix"
-# )
-# st.session_state.GCS_OUTPUT_CLIPS_PREFIX = st.sidebar.text_input(
-#     "Output Clips Prefix:",
-#     value=st.session_state.GCS_OUTPUT_CLIPS_PREFIX,
-#     key="cfg_gcs_output_clips_prefix"
-# )
+    if st.button("Switch Workspace"):
+        st.session_state.workspace = None
+        st.rerun()
 
-# --- Health Check for Backend API ---
-# api_ready = False
-# try:
-#     response = requests.get(f"{st.session_state.API_BASE_URL}/")
-#     if response.status_code == 200:
-#         api_ready = True
-#         st.sidebar.success("✅ Backend API is connected.")
-#     else:
-#         st.sidebar.error(f"❌ Backend API returned status {response.status_code}.")
-# except requests.exceptions.ConnectionError:
-#     st.sidebar.error("❌ Backend API is not reachable.")
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "1: Video Split",
+        "2: Metadata Generation",
+        "3: Clip Generation",
+        "4: Video Joining",
+        "5: AI Clip Generation"
+    ])
 
-# --- Main Application Tabs ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "1: Video Split",
-    "2: Metadata Generation",
-    "3: Clip Generation",
-    "4: Video Joining",
-    "5: AI Clip Generation"
-])
+    with tab1:
+        render_tab1(
+            allowed_video_extensions_param=['.mp4', '.mov', '.avi', '.mkv']
+        )
 
-with tab1:
-    render_tab1(
-        temp_split_output_dir_param="./temp_split_output", # This is now managed by the API
-        allowed_video_extensions_param=['.mp4', '.mov', '.avi', '.mkv']
-    )
+    with tab2:
+        render_tab2(
+            gemini_ready=bool(st.session_state.GEMINI_API_KEY),
+            gemini_api_key_global=st.session_state.GEMINI_API_KEY,
+            ai_model_name_global=st.session_state.AI_MODEL_NAME,
+            allowed_video_extensions_global=['.mp4', '.mov', '.avi', '.mkv'],
+        )
 
-with tab2:
-    render_tab2(
-        gcs_bucket_name_param=st.session_state.GCS_BUCKET_NAME,
-        gcs_prefix_param=st.session_state.GCS_PROCESSED_VIDEO_PREFIX,
-        gemini_ready=bool(st.session_state.GEMINI_API_KEY),
-        metadata_output_dir_global="./temp_metadata_output", # Managed by API
-        gemini_api_key_global=st.session_state.GEMINI_API_KEY,
-        ai_model_name_global=st.session_state.AI_MODEL_NAME,
-        concurrent_api_calls_limit=5, # Managed by API
-        allowed_video_extensions_global=['.mp4', '.mov', '.avi', '.mkv'],
-        gcs_metadata_bucket_name=st.session_state.GCS_BUCKET_NAME,
-        gcs_output_metadata_prefix_param=st.session_state.GCS_METADATA_PREFIX
-    )
+    with tab3:
+        render_tab3()
 
-with tab3:
-    render_tab3(gcs_bucket_name_param=st.session_state.GCS_BUCKET_NAME)
+    with tab4:
+        render_tab4()
 
-with tab4:
-    render_tab4(gcs_bucket_name=st.session_state.GCS_BUCKET_NAME)
+    with tab5:
+        render_tab5(
+            gemini_api_key_param=st.session_state.GEMINI_API_KEY,
+            ai_model_name_param=st.session_state.AI_MODEL_NAME,
+            gemini_ready_param=bool(st.session_state.GEMINI_API_KEY)
+        )
 
-with tab5:
-    render_tab5(
-        gcs_bucket_name_param=st.session_state.GCS_BUCKET_NAME,
-        gemini_api_key_param=st.session_state.GEMINI_API_KEY,
-        ai_model_name_param=st.session_state.AI_MODEL_NAME,
-        temp_clips_output_dir_param="./temp_clip_output", # Managed by API
-        temp_ai_clips_individual_output_dir_param="./temp_ai_clip", # Managed by API
-        temp_ai_video_joined_output_dir_param="./temp_ai_joined_video", # Managed by API
-        gcs_processed_video_prefix_param=st.session_state.GCS_PROCESSED_VIDEO_PREFIX,
-        gcs_metadata_prefix_param=st.session_state.GCS_METADATA_PREFIX,
-        gcs_output_clips_prefix_param=st.session_state.GCS_OUTPUT_CLIPS_PREFIX,
-        gemini_ready_param=bool(st.session_state.GEMINI_API_KEY)
-    )
+# --- Workspace Selection ---
+if not st.session_state.workspace:
+    st.header("Select or Create a Workspace")
+
+    api_url = st.session_state.API_BASE_URL
+    bucket_name = st.session_state.GCS_BUCKET_NAME
+    
+    try:
+        # Fetch existing workspaces
+        response = requests.get(f"{api_url}/workspaces/", params={"gcs_bucket": bucket_name})
+        response.raise_for_status()
+        workspaces = response.json().get("workspaces", [])
+        
+        # Workspace Selector
+        selected_workspace = st.selectbox("Select a workspace:", options=workspaces)
+        
+        if st.button("Enter Workspace"):
+            if selected_workspace:
+                st.session_state.workspace = selected_workspace
+                st.rerun()
+            else:
+                st.warning("Please select a workspace.")
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"Could not connect to the backend API to fetch workspaces. Please ensure the API is running. Error: {e}")
+        st.stop()
+
+    st.markdown("---")
+    
+    # Workspace Creator
+    st.subheader("Or, Create a New Workspace")
+    new_workspace_name = st.text_input("New workspace name:")
+    
+    if st.button("Create and Enter Workspace"):
+        if new_workspace_name:
+            try:
+                response = requests.post(
+                    f"{api_url}/workspaces/",
+                    params={"workspace_name": new_workspace_name, "gcs_bucket": bucket_name}
+                )
+                response.raise_for_status()
+                st.session_state.workspace = new_workspace_name
+                st.success(f"Workspace '{new_workspace_name}' created successfully!")
+                st.rerun()
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to create workspace. Error: {e.response.text if e.response else e}")
+        else:
+            st.warning("Please enter a name for the new workspace.")
+else:
+    # Render the main application
+    render_main_app()

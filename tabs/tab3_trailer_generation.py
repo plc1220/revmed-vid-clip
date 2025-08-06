@@ -1,15 +1,44 @@
 import streamlit as st
 import os
 import re
+import json
 import requests
 import time
-from services.gcs_service import generate_signed_url, list_gcs_files
+import pandas as pd
+from services.gcs_service import generate_signed_url, list_gcs_files, download_gcs_blob
 from typing import Optional
 
 # Define the base URL for the backend API
 API_BASE_URL = "http://127.0.0.1:8000"
 
-def render_tab3(gcs_bucket_name_param: str):
+@st.cache_data
+def load_metadata_content(gcs_bucket_name, gcs_blob_name):
+    """Downloads and parses a metadata JSON file from GCS, with caching."""
+    file_basename = os.path.basename(gcs_blob_name)
+    # Use a job-specific or unique temp folder to avoid conflicts if needed
+    temp_dir = "temp_metadata"
+    os.makedirs(temp_dir, exist_ok=True)
+    local_file_path = os.path.join(temp_dir, file_basename)
+
+    try:
+        success, error = download_gcs_blob(gcs_bucket_name, gcs_blob_name, local_file_path)
+        if not success:
+            raise Exception(f"Failed to download {file_basename}. Error: {error}")
+
+        with open(local_file_path, 'r', encoding='utf-8') as f:
+            metadata_content = json.load(f)
+        
+        return metadata_content
+    finally:
+        if os.path.exists(local_file_path):
+            os.remove(local_file_path)
+
+def render_tab3():
+    gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
+    workspace = st.session_state.workspace
+    metadata_gcs_prefix = os.path.join(workspace, "metadata/")
+    clips_output_prefix = st.session_state.GCS_OUTPUT_CLIPS_PREFIX
+
     st.header("Step 3: Clips Generation")
 
     # Initialize session state
@@ -23,13 +52,12 @@ def render_tab3(gcs_bucket_name_param: str):
         st.session_state.generated_clips_list = []
 
     # --- GCS Metadata File Listing ---
-    st.subheader(f"Select Metadata Files from gs://{gcs_bucket_name_param}/metadata/")
-    metadata_gcs_prefix = "metadata/"
+    st.subheader(f"Select Metadata Files from gs://{gcs_bucket_name}/{metadata_gcs_prefix}")
     gcs_metadata_files = []
     
-    if gcs_bucket_name_param:
+    if gcs_bucket_name:
         gcs_metadata_files, error = list_gcs_files(
-            gcs_bucket_name_param,
+            gcs_bucket_name,
             metadata_gcs_prefix,
             allowed_extensions=['.json']
         )
@@ -38,7 +66,7 @@ def render_tab3(gcs_bucket_name_param: str):
             gcs_metadata_files = []
 
     if not gcs_metadata_files:
-        st.warning(f"No metadata (.json) files found in 'gs://{gcs_bucket_name_param}/{metadata_gcs_prefix}'. Please generate metadata in Step 2.")
+        st.warning(f"No metadata (.json) files found in 'gs://{gcs_bucket_name}/{metadata_gcs_prefix}'. Please generate metadata in Step 2.")
         return
 
     # Initialize or update selection state
@@ -64,12 +92,40 @@ def render_tab3(gcs_bucket_name_param: str):
     # --- Metadata File List with Checkboxes ---
     st.write("Choose metadata files to use for clip generation:")
     for uri in gcs_metadata_files:
-        is_selected = st.checkbox(
-            os.path.basename(uri),
-            value=st.session_state.metadata_selection.get(uri, False),
-            key=f"cb_meta_{uri}"
-        )
-        st.session_state.metadata_selection[uri] = is_selected
+        file_basename = os.path.basename(uri)
+        with st.expander(file_basename):
+            col1, col2 = st.columns([0.8, 0.2])
+            with col1:
+                is_selected = st.checkbox(
+                    "Select for clip generation",
+                    value=st.session_state.metadata_selection.get(uri, False),
+                    key=f"cb_meta_{uri}"
+                )
+                st.session_state.metadata_selection[uri] = is_selected
+            with col2:
+                if st.button("Delete", key=f"delete_meta_{uri}"):
+                    try:
+                        api_url = f"{API_BASE_URL}/delete-gcs-blob/"
+                        payload = {
+                            "gcs_bucket": gcs_bucket_name,
+                            "blob_name": uri
+                        }
+                        response = requests.delete(api_url, json=payload)
+                        response.raise_for_status()
+                        st.success(f"Deleted {file_basename}.")
+                        # Clear the cache for the deleted file to ensure it's re-fetched if re-uploaded
+                        load_metadata_content.clear()
+                        st.rerun()
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"Failed to delete {file_basename}. Error: {e}")
+
+            # Display metadata content automatically using the cached function
+            try:
+                metadata_content = load_metadata_content(gcs_bucket_name, uri)
+                df = pd.DataFrame(metadata_content)
+                st.dataframe(df)
+            except Exception as e:
+                st.error(f"Could not load content for {file_basename}: {e}")
 
     selected_metadata_files = [uri for uri, selected in st.session_state.metadata_selection.items() if selected]
 
@@ -79,7 +135,7 @@ def render_tab3(gcs_bucket_name_param: str):
         st.markdown("---")
         output_gcs_prefix = st.text_input(
             "GCS Prefix for Output Clips:",
-            value="clips/",
+            value=clips_output_prefix,
             key="output_gcs_prefix_tab3"
         )
 
@@ -96,7 +152,8 @@ def render_tab3(gcs_bucket_name_param: str):
             try:
                 api_url = f"{API_BASE_URL}/generate-clips/"
                 payload = {
-                    "gcs_bucket": gcs_bucket_name_param,
+                    "workspace": workspace,
+                    "gcs_bucket": gcs_bucket_name,
                     "metadata_blob_names": selected_metadata_files,
                     "output_gcs_prefix": output_gcs_prefix
                 }
@@ -154,7 +211,7 @@ def render_tab3(gcs_bucket_name_param: str):
         st.subheader("✅ Generated Clips")
 
         # In a real app, you'd get these from a config or the API
-        gcs_bucket_name = gcs_bucket_name_param
+        gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
 
         for clip_blob_name in st.session_state.generated_clips_list:
             try:

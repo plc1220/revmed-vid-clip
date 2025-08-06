@@ -2,7 +2,8 @@ import os
 import google.genai as genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
-from typing import Tuple
+from typing import Tuple, List
+from services.schemas import TrailerClipMetadata
 
 # --- Gemini Client Initialization ---
 # Switch to Vertex AI client for GCS URI support
@@ -43,10 +44,20 @@ async def generate_content_async(prompt: str, gcs_video_uri: str, model_name: st
         contents = [prompt, video_part]
         
         # Generation and safety settings
+        # Generate the JSON schema from the Pydantic model.
+        trailer_clip_schema = TrailerClipMetadata.model_json_schema()
+        # The API expects a list of these objects, so we define the response schema as an array of that object schema.
+        response_schema_for_list = {
+            "type": "array",
+            "items": trailer_clip_schema
+        }
+
         config = types.GenerateContentConfig(
             temperature=1.0,
             top_p=1.0,
             max_output_tokens=8192,
+            response_mime_type="application/json",
+            response_schema=response_schema_for_list,
             safety_settings=[
                 types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
                 types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE'),

@@ -2,6 +2,8 @@ import streamlit as st
 import os
 import time
 import requests
+import json
+import pandas as pd
 from services.gcs_service import list_gcs_files, download_gcs_blob
 
 # Define the base URL for the backend API
@@ -12,7 +14,7 @@ API_BASE_URL = "http://127.0.0.1:8000"
 default_prompt_template = """
 You are a professional film and drama editor AI, equipped with multimodal understanding (visuals, dialogue, sound, and inferred emotion). Your task is to meticulously analyze the provided video content from a drama series.** Your goal is to identify multiple key moments suitable for constructing a dynamic and engaging 2-minute trailer from **this specific clip.**
 
-For each potential trailer moment you identify **within this video clip**, extract and structure the following metadata. Be precise and insightful.
+For each potential trailer moment you identify **within this video clip**, extract and structure the metadata. Be precise and insightful.
 
 **Input to Analyze:**
 *   **Primary:** The video content of the drama clip named **`{{source_filename}}`**. This clip is **`{{actual_video_duration}}`** long. Make sure you only capture scenes within the actual length of *this specific video clip*.
@@ -21,76 +23,52 @@ For each potential trailer moment you identify **within this video clip**, extra
 **Prioritize Moments That:**
 *   Introduce key characters effectively.
 *   Establish the central conflict or mystery.
-(Rest of the prioritization list)
+*   Contain strong emotional beats (joy, sorrow, anger, fear).
+*   Feature visually compelling cinematography or action.
+*   Include memorable or impactful lines of dialogue.
+*   Create suspense or a cliffhanger.
+*   Hint at a major plot twist or reveal.
 
-**Output Requirements:**
-Provide your response as a single, valid JSON array. Each element in the array should be a JSON object representing one potential trailer clip. Each object must contain the following fields:
+**Your Task:**
+Based on the video content and the prioritization criteria, identify the best moments and generate the corresponding metadata for each. The output format is handled by a JSON schema, so you only need to focus on the content of the analysis.
 
-1.  **`source_filename`**:
-    *   Description: The filename of the video clip being analyzed (which is **`{{source_filename}}`**).
-    *   Example: "cinta-buat-dara-S1E1_part1.mp4"
-2.  **`timestamp_start_end`**:
-    *   Description: Precise in and out points for the clip (HH:MM:SS - HH:MM:SS) **relative to the start of the provided video file.** Aim for clips 2-15 seconds long. **All timestamps (both start and end) MUST be within the actual duration of the input video clip `source_filename`. Do not generate timestamps exceeding the video's length.**
-    *   Example: "00:02:15 - 00:02:30".
-3.  **`editor_note_clip_rationale`**:
-    *   Description: Your rationale for selecting this clip. Why is it trailer-worthy? (Max 30 words)
-    *   Example: "The mother threatens Dara's prized possession, creating a cliffhanger for her rebellious streak and showcasing immediate conflict."
-4.  **’brief_scene_description‘**:
-    *   Description: Concisely summarize the core action, setting, and characters. Focus on visual/narrative significance. (Max 25 words)
-    *   Example: "Character A confronts Character B in a dimly lit alley during a storm. Close up on A's determined, angry face."
-5.  **‘key_dialogue_snippet’**:
-    *   Description: Most potent intriguing, or revealing line(s) of dialogue (verbatim, max 2 lines). If none, state "None" or "Action/Visual Only."
-    *   Example: "Mama: "Mama tahu macam mana nak ubat Dara!" Dara: (Screaming) "No! Mama! Mama, Dara minta maaf Mama!""
-6.  **’dominant_emotional_tone_impact‘:
-    *   Description: Primary feeling(s) or impact evoked. (Max 5 keywords, comma-separated)
-    *   Example: "Tense, Confrontational, Betrayal, Shock, Anger"
-7.  **‘key_visual_elements_cinematography’:
-    *   Description: Striking visuals, camera work, lighting, significant props/symbols. (Max 5 keywords/phrases, comma-separated)
-    *   Example: "Dramatic low-angle, Rain-streaked, Fast cuts, Close-up on eyes, Flickering neon sign"
-8.  **·characters_in_focus_objective_emotion‘:
-    *   Description: Who is central? Their objective or strong emotion? (Max 15 words)
-    *   Example: "Sarah (desperate) trying to escape."
-9.  **plot_relevance_significance’:
-    *   Description: Why is this moment important for the narrative or trailer? (Max 20 words)
-    *   Example: "Introduces main antagonist and the core personal conflict."
-10. **trailer_potential_category‘:
-    *   Description: How could this clip be used? (Choose one or two from list, comma-separated)
-    *   Options: Hook/Opening, Character Introduction, Inciting Incident, Conflict Build-up, Rising Action, Tension/Suspense Peak, Emotional Beat, Action Sequence Highlight, Twist/Reveal Tease, Climax Tease, Resolution Glimpse, Cliffhanger/Question, Thematic Montage Element
-    *   Example: "Cliffhanger/Question, Tension/Suspense Peak"
-11. **pacing_suggestion_for_clip’:
-    *   Description: How should this clip feel in a trailer sequence? (Choose one from list)
-    *   Options: Rapid Cut, Medium Pace, Slow Burn/Held Shot, Builds Intensity, Sudden Impact
-    *   Example: "Builds Intensity"
-12. **music_sound_cue_idea‘:
-    *   Description: Optional. Sound to amplify the moment. (Max 10 words)
-    *   Example: "Sudden silence then impact sound."
-
-    *Crucial JSON Formatting Rules:
-    *The generated JSON must be strictly valid according to standard JSON syntax (RFC 8259).
-    *Specifically, ensure there are NO TRAILING COMMAS after the last element in an array or the last key-value pair in an object. For example, ["item1", "item2"] is correct, but ["item1", "item2",] is incorrect. Similarly, {{"key1": "value1", "key2": "value2"}} is correct, but {{"key1": "value1", "key2": "value2",}} is incorrect.
-    *All strings within the JSON (keys and values) must be enclosed in double quotes and properly escaped if they contain special characters (e.g., double quotes within a string should be escaped as \").
-    *If a category (diagnoses, observations, etc.) has no items, use an empty array [] for that category's list. For the summary, if no summary can be generated, provide an empty string "" or a "None available." string.
-    *After generating the JSON, please perform a quick check to ensure it is valid JSON syntax according to the rules mentioned above.
-    *A common error is forgetting a comma or a colon between elements. For instance,
-    *{{"description\": \"A\" \"codes\": [\"C\"] is WRONG because it's missing a comma after \"A\". It should be {{\"description\": \"A\", \"codes\": [\"C\"]}}.
-    *Please meticulously check for missing commas before outputting the JSON.
-    *Is there an unclosed string (") on a previous line that's making the parser confused?
-    *Is all property enclosed with double quote (")
+**CRITICAL GUARDRAIL:** The `timestamp_start_end` value is the most important field. It **MUST** be accurate. The end time of the clip cannot exceed the `actual_video_duration` of **`{{actual_video_duration}}`**. Any timestamp generated beyond this duration is invalid and will be discarded. Double-check your generated timestamps against the video's length before finalizing the output.
 """
 
+@st.cache_data
+def load_metadata_content_tab2(gcs_bucket_name, gcs_blob_name):
+    """Downloads and parses a metadata JSON file from GCS, with caching."""
+    file_basename = os.path.basename(gcs_blob_name)
+    # Use a job-specific or unique temp folder to avoid conflicts if needed
+    temp_dir = "temp_metadata"
+    os.makedirs(temp_dir, exist_ok=True)
+    local_file_path = os.path.join(temp_dir, file_basename)
+
+    try:
+        success, error = download_gcs_blob(gcs_bucket_name, gcs_blob_name, local_file_path)
+        if not success:
+            raise Exception(f"Failed to download {file_basename}. Error: {error}")
+
+        with open(local_file_path, 'r', encoding='utf-8') as f:
+            metadata_content = json.load(f)
+        
+        return metadata_content
+    finally:
+        if os.path.exists(local_file_path):
+            os.remove(local_file_path)
+
 def render_tab2(
-    gcs_bucket_name_param: str,
-    gcs_prefix_param: str,
     gemini_ready: bool,
-    metadata_output_dir_global: str,
     gemini_api_key_global: str,
     ai_model_name_global: str,
-    concurrent_api_calls_limit: int,
-    allowed_video_extensions_global: list,
-    gcs_metadata_bucket_name: str,
-    gcs_output_metadata_prefix_param: str
+    allowed_video_extensions_global: list
 ):
-    st.header(f"Step 2: Metadata Generation from Segment Folders (gs://{gcs_bucket_name_param}/segments/)")
+    gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
+    workspace = st.session_state.workspace
+    segments_prefix = os.path.join(workspace, "segments/")
+    metadata_output_prefix = st.session_state.GCS_METADATA_PREFIX
+
+    st.header(f"Step 2: Metadata Generation from Segment Folders (gs://{gcs_bucket_name}/{segments_prefix})")
 
     # Initialize session state
     if "metadata_job_id" not in st.session_state:
@@ -101,6 +79,8 @@ def render_tab2(
         st.session_state.metadata_job_details = ""
     if "batch_prompt_text_area_content" not in st.session_state:
         st.session_state.batch_prompt_text_area_content = default_prompt_template
+    if "user_prompt" not in st.session_state:
+        st.session_state.user_prompt = ""
     if "batch_progress_bar_placeholder" not in st.session_state:
         st.session_state.batch_progress_bar_placeholder = None
     if "generated_metadata_files" not in st.session_state:
@@ -110,22 +90,22 @@ def render_tab2(
 
     # --- GCS File Listing ---
     gcs_video_uris = []
-    if not gcs_bucket_name_param:
+    if not gcs_bucket_name:
         st.error("GCS Bucket name for videos not provided.")
     else:
         blob_names, error = list_gcs_files(
-            gcs_bucket_name_param,
-            "segments/",
+            gcs_bucket_name,
+            segments_prefix,
             allowed_extensions=allowed_video_extensions_global
         )
         if error:
             st.error(f"Error listing segment files from GCS: {error}")
             gcs_video_uris = []
         else:
-            gcs_video_uris = [f"gs://{gcs_bucket_name_param}/{name}" for name in blob_names]
+            gcs_video_uris = [f"gs://{gcs_bucket_name}/{name}" for name in blob_names]
 
         if not gcs_video_uris:
-            st.warning(f"No video segment files found in 'gs://{gcs_bucket_name_param}/segments/'. Please split a video in Step 1.")
+            st.warning(f"No video segment files found in 'gs://{gcs_bucket_name}/{segments_prefix}'. Please split a video in Step 1.")
 
     if gcs_video_uris:
         st.success(f"Found {len(gcs_video_uris)} video segment file(s).")
@@ -164,12 +144,16 @@ def render_tab2(
 
         # --- Prompt and Generate Button ---
         st.text_area(
-            "Gemini Prompt TEMPLATE:",
-            value=st.session_state.batch_prompt_text_area_content,
-            height=300,
-            key="batch_prompt_text_area_widget",
-            on_change=lambda: setattr(st.session_state, 'batch_prompt_text_area_content', st.session_state.batch_prompt_text_area_widget)
+            "Optional User Prompt:",
+            value=st.session_state.user_prompt,
+            height=100,
+            key="user_prompt_widget",
+            on_change=lambda: setattr(st.session_state, 'user_prompt', st.session_state.user_prompt_widget),
+            help="Add any specific instructions or context for the AI. This will be added to the main prompt."
         )
+
+        with st.expander("View Full Prompt Template"):
+            st.code(st.session_state.batch_prompt_text_area_content, language='text')
 
         if st.button("✨ Generate Metadata for Selected Files", key="batch_process_gemini_button_gcs"):
             selected_videos = [uri for uri, selected in st.session_state.video_selection.items() if selected]
@@ -186,12 +170,14 @@ def render_tab2(
 
             try:
                 api_url = f"{API_BASE_URL}/generate-metadata/"
+                prompt_with_user_input = st.session_state.batch_prompt_text_area_content + "\n\n" + st.session_state.user_prompt
                 payload = {
-                    "gcs_bucket": gcs_bucket_name_param,
+                    "workspace": workspace,
+                    "gcs_bucket": gcs_bucket_name,
                     "gcs_video_uris": selected_videos,
-                    "prompt_template": st.session_state.batch_prompt_text_area_content,
+                    "prompt_template": prompt_with_user_input,
                     "ai_model_name": ai_model_name_global,
-                    "gcs_output_prefix": gcs_output_metadata_prefix_param
+                    "gcs_output_prefix": metadata_output_prefix
                 }
                 response = requests.post(api_url, json=payload)
                 response.raise_for_status()
@@ -249,39 +235,14 @@ def render_tab2(
         for gcs_uri in st.session_state.generated_metadata_files:
             file_basename = os.path.basename(gcs_uri)
             with st.expander(f"View Metadata for: {file_basename}"):
-                # Check if content is already downloaded and stored
-                if file_basename in st.session_state.viewed_metadata_content:
-                    st.text_area(
-                        label="Metadata Content",
-                        value=st.session_state.viewed_metadata_content[file_basename],
-                        height=300,
-                        key=f"meta_content_{gcs_uri}"
-                    )
-                else:
-                    # Show a button to load the content on demand
-                    if st.button("Load Content", key=f"load_btn_{gcs_uri}"):
-                        try:
-                            gcs_path_str = gcs_uri.split("gs://")[1]
-                            gcs_bucket_name, gcs_blob_name = gcs_path_str.split('/', 1)
-                            
-                            # Create a temporary file path
-                            temp_dir = "temp_metadata"
-                            os.makedirs(temp_dir, exist_ok=True)
-                            local_file_path = os.path.join(temp_dir, file_basename)
-
-                            # Use the GCS service to download
-                            success, error = download_gcs_blob(gcs_bucket_name, gcs_blob_name, local_file_path)
-
-                            if success:
-                                with open(local_file_path, 'r', encoding='utf-8') as f:
-                                    metadata_content = f.read()
-                                st.session_state.viewed_metadata_content[file_basename] = metadata_content
-                                os.remove(local_file_path) # Clean up the temp file
-                                st.rerun() # Rerun to display the loaded content
-                            else:
-                                st.error(f"Failed to download {file_basename} from GCS. Error: {error}")
-                        except Exception as e:
-                            st.error(f"An unexpected error occurred: {e}")
+                try:
+                    gcs_path_str = gcs_uri.split("gs://")[1]
+                    gcs_bucket_name, gcs_blob_name = gcs_path_str.split('/', 1)
+                    metadata_content = load_metadata_content_tab2(gcs_bucket_name, gcs_blob_name)
+                    df = pd.DataFrame(metadata_content)
+                    st.dataframe(df)
+                except Exception as e:
+                    st.error(f"Could not load content for {file_basename}: {e}")
 
         if st.button("Clear All Results", key="clear_metadata_results_button"):
             st.session_state.generated_metadata_files = []

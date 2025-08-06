@@ -16,11 +16,13 @@ from services import gcs_service, video_service, ai_service
 
 # --- Pydantic Models for API requests ---
 class SplitRequest(BaseModel):
+    workspace: str
     gcs_bucket: str
     gcs_blob_name: str
     segment_duration: int # in seconds
 
 class MetadataRequest(BaseModel):
+    workspace: str
     gcs_bucket: str
     gcs_video_uris: list[str]
     prompt_template: str
@@ -28,18 +30,25 @@ class MetadataRequest(BaseModel):
     gcs_output_prefix: str
 
 class ClipGenerationRequest(BaseModel):
+    workspace: str
     gcs_bucket: str
     metadata_blob_names: list[str]  # GCS paths to the metadata files
     output_gcs_prefix: str
 
 class JoinRequest(BaseModel):
+    workspace: str
     gcs_bucket: str
     clip_blob_names: list[str]
     output_gcs_prefix: str
 
+class GCSDeleteRequest(BaseModel):
+    gcs_bucket: str
+    blob_name: str
+
 class UploadResponse(BaseModel):
     gcs_bucket: str
     gcs_blob_name: str
+    workspace: str
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -123,7 +132,7 @@ def process_splitting(job_id: str, request: SplitRequest):
         print(f"Job {job_id}: Uploading {len(segment_paths)} segments to GCS...")
         # Create a clean output prefix in a dedicated 'segments' folder
         base_filename = os.path.basename(request.gcs_blob_name)
-        output_prefix = os.path.join("segments", os.path.splitext(base_filename)[0] + "_segments/")
+        output_prefix = os.path.join(request.workspace, "segments", os.path.splitext(base_filename)[0] + "_segments/")
         
         for i, segment_path in enumerate(segment_paths):
             segment_blob_name = os.path.join(output_prefix, os.path.basename(segment_path))
@@ -204,25 +213,39 @@ async def process_metadata_generation(job_id: str, request: MetadataRequest):
                     metadata_json_str = metadata_json_str.strip()[7:-3]
                 metadata_objects = json.loads(metadata_json_str)
                 
-                # Overwrite the source_filename from the AI with the correct GCS URI to ensure accuracy.
+                validated_metadata = []
                 if isinstance(metadata_objects, list):
                     for obj in metadata_objects:
                         if isinstance(obj, dict):
-                            # Ensure the 'source_filename' key holds the correct, authoritative GCS URI.
-                            obj['source_filename'] = gcs_uri
-                elif isinstance(metadata_objects, dict):
-                    # If the AI returns a single object, update it as well.
-                    metadata_objects['source_filename'] = gcs_uri
+                            # Validate timestamp
+                            timestamp = obj.get("timestamp_start_end")
+                            if timestamp:
+                                try:
+                                    start_str, end_str = timestamp.split(' - ')
+                                    end_secs = sum(x * int(t) for x, t in zip([3600, 60, 1], end_str.split(':')))
+                                    if end_secs <= duration_seconds:
+                                        obj['source_filename'] = gcs_uri
+                                        validated_metadata.append(obj)
+                                    else:
+                                        print(f"Job {job_id}: Discarding invalid timestamp {timestamp} for video {gcs_uri} with duration {duration_seconds}s.")
+                                except (ValueError, AttributeError):
+                                    print(f"Job {job_id}: Discarding malformed timestamp '{timestamp}' for video {gcs_uri}.")
+                            else:
+                                print(f"Job {job_id}: Discarding metadata object with missing timestamp for video {gcs_uri}.")
+                
+                if not validated_metadata:
+                    print(f"Job {job_id}: No valid metadata generated for {gcs_uri} after validation. Skipping.")
+                    continue
 
                 # Even if the AI returns a list, we save it to a file specific to this video.
                 output_filename = f"{os.path.splitext(video_basename)[0]}_metadata.json"
                 local_metadata_path = os.path.join(job_temp_dir, output_filename)
 
                 with open(local_metadata_path, 'w') as f:
-                    json.dump(metadata_objects, f, indent=2)
+                    json.dump(validated_metadata, f, indent=2)
 
                 # Upload the individual metadata file
-                metadata_blob_name = os.path.join(request.gcs_output_prefix, output_filename)
+                metadata_blob_name = os.path.join(request.workspace, request.gcs_output_prefix, output_filename)
                 upload_details = f"Uploading metadata for {video_basename} to {metadata_blob_name}"
                 _write_job(job_id, {"status": "in_progress", "details": upload_details})
                 print(f"Job {job_id}: {upload_details}")
@@ -350,7 +373,7 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
                     print(f"Job {job_id}: Failed to create clip {clip_filename}. Error: {error}")
                     continue
 
-                clip_blob_name = os.path.join(request.output_gcs_prefix, clip_filename)
+                clip_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, clip_filename)
                 success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, final_clip_path, clip_blob_name)
                 if not success:
                     print(f"Job {job_id}: Failed to upload clip {clip_blob_name}. Error: {error}")
@@ -411,7 +434,7 @@ def process_video_joining(job_id: str, request: JoinRequest):
         _write_job(job_id, {"status": "in_progress", "details": "Uploading final video..."})
         print(f"Job {job_id}: Uploading final video...")
         
-        output_blob_name = os.path.join(request.output_gcs_prefix, output_filename)
+        output_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, output_filename)
         success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_output_path, output_blob_name)
         if not success:
             raise Exception(f"Failed to upload final video: {error}")
@@ -436,9 +459,14 @@ async def read_root():
     return {"status": "API is running"}
 
 @app.post("/upload-video/", tags=["Video Processing"], response_model=UploadResponse)
-async def upload_video_endpoint(file: UploadFile, gcs_bucket: str = Form(...), gcs_prefix: str = Form("uploads/")):
+async def upload_video_endpoint(
+    file: UploadFile,
+    gcs_bucket: str = Form(...),
+    workspace: str = Form(...),
+    gcs_prefix: str = Form("uploads/")
+):
     """
-    Uploads a video file to a temporary local path and then to GCS.
+    Uploads a video file to a temporary local path and then to a workspace-specific folder in GCS.
     """
     job_id = str(uuid.uuid4())
     job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
@@ -452,12 +480,14 @@ async def upload_video_endpoint(file: UploadFile, gcs_bucket: str = Form(...), g
             shutil.copyfileobj(file.file, buffer)
 
         # Upload to GCS
-        gcs_blob_name = os.path.join(gcs_prefix, f"{job_id}_{file.filename}")
+        # All uploads now go into a workspace folder
+        gcs_blob_name = os.path.join(workspace, gcs_prefix, f"{job_id}_{file.filename}")
+        
         success, error = gcs_service.upload_gcs_blob(gcs_bucket, local_video_path, gcs_blob_name)
         if not success:
             raise HTTPException(status_code=500, detail=f"GCS Upload failed: {error}")
 
-        return UploadResponse(gcs_bucket=gcs_bucket, gcs_blob_name=gcs_blob_name)
+        return UploadResponse(gcs_bucket=gcs_bucket, gcs_blob_name=gcs_blob_name, workspace=workspace)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -498,6 +528,26 @@ async def generate_clips_endpoint(request: ClipGenerationRequest, background_tas
     background_tasks.add_task(process_clip_generation, job_id, request)
     return {"message": "Clip generation job started.", "job_id": job_id}
 
+@app.get("/workspaces/", tags=["Workspaces"])
+async def list_workspaces_endpoint(gcs_bucket: str):
+    """
+    Lists all available workspaces (top-level folders) in the GCS bucket.
+    """
+    workspaces, error = gcs_service.list_workspaces(gcs_bucket)
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return {"workspaces": workspaces}
+
+@app.post("/workspaces/", tags=["Workspaces"], status_code=201)
+async def create_workspace_endpoint(workspace_name: str, gcs_bucket: str):
+    """
+    Creates a new workspace by setting up its folder structure in GCS.
+    """
+    success, message = gcs_service.create_workspace(gcs_bucket, workspace_name)
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    return {"message": message}
+
 @app.post("/join-videos/", tags=["Video Processing"], status_code=202)
 async def join_videos_endpoint(request: JoinRequest, background_tasks: BackgroundTasks):
     """
@@ -519,3 +569,13 @@ async def get_job_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+@app.delete("/delete-gcs-blob/", tags=["GCS"])
+async def delete_gcs_blob_endpoint(request: GCSDeleteRequest):
+    """
+    Deletes a specific blob from a GCS bucket.
+    """
+    success, error = gcs_service.delete_gcs_blob(request.gcs_bucket, request.blob_name)
+    if not success:
+        raise HTTPException(status_code=404, detail=error)
+    return {"message": f"Blob {request.blob_name} deleted successfully."}
