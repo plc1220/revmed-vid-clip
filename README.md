@@ -104,7 +104,7 @@ The application requires both the backend and frontend servers to be running sim
 
 ## Deployment
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/your-github-username/your-repo-name.git&cloudshell_tutorial=README.md)
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/plc1220/revmed-vid-clip.git&cloudshell_tutorial=README.md)
 
 Click the button above to deploy this application to Google Cloud Run. This will open Google Cloud Shell, clone the repository, and guide you through the deployment process.
 
