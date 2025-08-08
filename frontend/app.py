@@ -25,7 +25,7 @@ CONFIG_KEYS = {
     "GCS_PROCESSED_VIDEO_PREFIX": "processed/",
     "GCS_METADATA_PREFIX": "metadata/",
     "GCS_OUTPUT_CLIPS_PREFIX": "clips/",
-    "API_BASE_URL": "http://127.0.0.1:8000",
+    "API_BASE_URL": os.getenv("API_BASE_URL", "http://127.0.0.1:8000"),
 }
 
 for key, default_value in CONFIG_KEYS.items():

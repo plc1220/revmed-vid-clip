@@ -4,10 +4,8 @@ import time
 import requests
 import json
 import pandas as pd
-from services.gcs_service import list_gcs_files, download_gcs_blob
 
 # Define the base URL for the backend API
-API_BASE_URL = "http://127.0.0.1:8000"
 
 # It's good to define it here so render_tab2 can use it as a default
 # for st.session_state.batch_prompt_text_area_content
@@ -38,24 +36,14 @@ Based on the video content and the prioritization criteria, identify the best mo
 @st.cache_data
 def load_metadata_content_tab2(gcs_bucket_name, gcs_blob_name):
     """Downloads and parses a metadata JSON file from GCS, with caching."""
-    file_basename = os.path.basename(gcs_blob_name)
-    # Use a job-specific or unique temp folder to avoid conflicts if needed
-    temp_dir = "temp_metadata"
-    os.makedirs(temp_dir, exist_ok=True)
-    local_file_path = os.path.join(temp_dir, file_basename)
-
     try:
-        success, error = download_gcs_blob(gcs_bucket_name, gcs_blob_name, local_file_path)
-        if not success:
-            raise Exception(f"Failed to download {file_basename}. Error: {error}")
-
-        with open(local_file_path, 'r', encoding='utf-8') as f:
-            metadata_content = json.load(f)
-        
-        return metadata_content
-    finally:
-        if os.path.exists(local_file_path):
-            os.remove(local_file_path)
+        api_url = f"{st.session_state.API_BASE_URL}/gcs/download"
+        params = {"gcs_bucket": gcs_bucket_name, "blob_name": gcs_blob_name}
+        response = requests.get(api_url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Failed to download {gcs_blob_name}. Error: {e}")
 
 def render_tab2(
     gemini_ready: bool,
@@ -93,16 +81,16 @@ def render_tab2(
     if not gcs_bucket_name:
         st.error("GCS Bucket name for videos not provided.")
     else:
-        blob_names, error = list_gcs_files(
-            gcs_bucket_name,
-            segments_prefix,
-            allowed_extensions=allowed_video_extensions_global
-        )
-        if error:
-            st.error(f"Error listing segment files from GCS: {error}")
-            gcs_video_uris = []
-        else:
+        try:
+            api_url = f"{st.session_state.API_BASE_URL}/gcs/list"
+            params = {"gcs_bucket": gcs_bucket_name, "prefix": segments_prefix}
+            response = requests.get(api_url, params=params)
+            response.raise_for_status()
+            blob_names = response.json().get("files", [])
             gcs_video_uris = [f"gs://{gcs_bucket_name}/{name}" for name in blob_names]
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error listing segment files from GCS: {e}")
+            gcs_video_uris = []
 
         if not gcs_video_uris:
             st.warning(f"No video segment files found in 'gs://{gcs_bucket_name}/{segments_prefix}'. Please split a video in Step 1.")
@@ -169,7 +157,7 @@ def render_tab2(
             st.session_state.viewed_metadata_content = {}
 
             try:
-                api_url = f"{API_BASE_URL}/generate-metadata/"
+                api_url = f"{st.session_state.API_BASE_URL}/generate-metadata/"
                 prompt_with_user_input = st.session_state.batch_prompt_text_area_content + "\n\n" + st.session_state.user_prompt
                 payload = {
                     "workspace": workspace,
@@ -201,7 +189,7 @@ def render_tab2(
         
         while st.session_state.get("metadata_job_status") in ["pending", "in_progress", "starting"]:
             try:
-                status_url = f"{API_BASE_URL}/jobs/{job_id}"
+                status_url = f"{st.session_state.API_BASE_URL}/jobs/{job_id}"
                 response = requests.get(status_url)
                 response.raise_for_status()
                 

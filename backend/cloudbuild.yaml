@@ -1,0 +1,22 @@
+steps:
+  # Build and push backend
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/backend:$BUILD_ID', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/backend:$BUILD_ID']
+
+  # Deploy backend
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'revmedia-backend'
+      - '--image=asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/backend:$BUILD_ID'
+      - '--region=asia-southeast1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars=GOOGLE_CLOUD_PROJECT=my-rd-coe-demo-data,GOOGLE_CLOUD_LOCATION=asia-southeast1,DEFAULT_GCS_BUCKET=my-rd-coe-demo-data-revmed-bucket'
+
+images:
+  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/backend:$BUILD_ID'

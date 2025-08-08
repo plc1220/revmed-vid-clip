@@ -3,10 +3,8 @@ import os
 import requests
 import time
 import datetime
-from services.gcs_service import list_gcs_files, generate_signed_url
 
 # Define the base URL for the backend API
-API_BASE_URL = "http://127.0.0.1:8000"
 
 def list_gcs_clips_for_display(bucket_name, prefix):
     """
@@ -14,25 +12,29 @@ def list_gcs_clips_for_display(bucket_name, prefix):
     This remains in the UI as it's for presentation, not processing.
     """
     try:
-        allowed_extensions = ['.mp4', '.mov', '.avi', '.mkv']
-        blob_names, error = list_gcs_files(bucket_name, prefix, allowed_extensions)
-        if error:
-            return [], f"Error listing GCS clips: {error}"
+        api_url = f"{st.session_state.API_BASE_URL}/gcs/list"
+        params = {"gcs_bucket": bucket_name, "prefix": prefix}
+        response = requests.get(api_url, params=params)
+        response.raise_for_status()
+        blob_names = response.json().get("files", [])
 
         clips_data = []
         for blob_name in blob_names:
-            url, error = generate_signed_url(bucket_name, blob_name)
-            if error:
-                print(f"Could not generate signed URL for {blob_name}: {error}")
+            api_url = f"{st.session_state.API_BASE_URL}/gcs/signed-url"
+            params = {"gcs_bucket": bucket_name, "blob_name": blob_name}
+            response = requests.get(api_url, params=params)
+            if response.status_code == 200:
+                url = response.json().get("url")
+                clips_data.append({
+                    "name": blob_name,
+                    "filename": os.path.basename(blob_name),
+                    "url": url
+                })
+            else:
+                print(f"Could not generate signed URL for {blob_name}: {response.text}")
                 continue
-            
-            clips_data.append({
-                "name": blob_name,
-                "filename": os.path.basename(blob_name),
-                "url": url
-            })
         return clips_data, None
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         return [], f"Error processing GCS clips for display: {e}"
 
 def render_tab4():
@@ -81,7 +83,7 @@ def render_tab4():
                 errors = []
                 for clip in st.session_state.selected_clips_for_joining:
                     try:
-                        api_url = f"{API_BASE_URL}/delete-gcs-blob/"
+                        api_url = f"{st.session_state.API_BASE_URL}/delete-gcs-blob/"
                         payload = {
                             "gcs_bucket": gcs_bucket_name,
                             "blob_name": clip['name']
@@ -120,7 +122,7 @@ def render_tab4():
             with c2:
                 if st.button("🗑️", key=f"delete_clip_{clip_info['name']}", help=f"Delete {clip_info['filename']}"):
                     try:
-                        api_url = f"{API_BASE_URL}/delete-gcs-blob/"
+                        api_url = f"{st.session_state.API_BASE_URL}/delete-gcs-blob/"
                         payload = {
                             "gcs_bucket": gcs_bucket_name,
                             "blob_name": clip_info['name']
@@ -146,7 +148,7 @@ def render_tab4():
             st.session_state.join_job_details = "Initializing video joining job..."
 
             try:
-                api_url = f"{API_BASE_URL}/join-videos/"
+                api_url = f"{st.session_state.API_BASE_URL}/join-videos/"
                 payload = {
                     "workspace": workspace,
                     "gcs_bucket": gcs_bucket_name,
@@ -177,7 +179,7 @@ def render_tab4():
         
         while st.session_state.get("join_job_status") in ["pending", "in_progress", "starting"]:
             try:
-                status_url = f"{API_BASE_URL}/jobs/{job_id}"
+                status_url = f"{st.session_state.API_BASE_URL}/jobs/{job_id}"
                 response = requests.get(status_url)
                 response.raise_for_status()
                 

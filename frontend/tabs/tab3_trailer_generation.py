@@ -5,33 +5,21 @@ import json
 import requests
 import time
 import pandas as pd
-from services.gcs_service import generate_signed_url, list_gcs_files, download_gcs_blob
 from typing import Optional
 
 # Define the base URL for the backend API
-API_BASE_URL = "http://127.0.0.1:8000"
 
 @st.cache_data
 def load_metadata_content(gcs_bucket_name, gcs_blob_name):
     """Downloads and parses a metadata JSON file from GCS, with caching."""
-    file_basename = os.path.basename(gcs_blob_name)
-    # Use a job-specific or unique temp folder to avoid conflicts if needed
-    temp_dir = "temp_metadata"
-    os.makedirs(temp_dir, exist_ok=True)
-    local_file_path = os.path.join(temp_dir, file_basename)
-
     try:
-        success, error = download_gcs_blob(gcs_bucket_name, gcs_blob_name, local_file_path)
-        if not success:
-            raise Exception(f"Failed to download {file_basename}. Error: {error}")
-
-        with open(local_file_path, 'r', encoding='utf-8') as f:
-            metadata_content = json.load(f)
-        
-        return metadata_content
-    finally:
-        if os.path.exists(local_file_path):
-            os.remove(local_file_path)
+        api_url = f"{st.session_state.API_BASE_URL}/gcs/download"
+        params = {"gcs_bucket": gcs_bucket_name, "blob_name": gcs_blob_name}
+        response = requests.get(api_url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Failed to download {gcs_blob_name}. Error: {e}")
 
 def render_tab3():
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
@@ -56,13 +44,14 @@ def render_tab3():
     gcs_metadata_files = []
     
     if gcs_bucket_name:
-        gcs_metadata_files, error = list_gcs_files(
-            gcs_bucket_name,
-            metadata_gcs_prefix,
-            allowed_extensions=['.json']
-        )
-        if error:
-            st.error(f"Error listing metadata files from GCS: {error}")
+        try:
+            api_url = f"{st.session_state.API_BASE_URL}/gcs/list"
+            params = {"gcs_bucket": gcs_bucket_name, "prefix": metadata_gcs_prefix}
+            response = requests.get(api_url, params=params)
+            response.raise_for_status()
+            gcs_metadata_files = response.json().get("files", [])
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error listing metadata files from GCS: {e}")
             gcs_metadata_files = []
 
     if not gcs_metadata_files:
@@ -105,7 +94,7 @@ def render_tab3():
             with col2:
                 if st.button("Delete", key=f"delete_meta_{uri}"):
                     try:
-                        api_url = f"{API_BASE_URL}/delete-gcs-blob/"
+                        api_url = f"{st.session_state.API_BASE_URL}/delete-gcs-blob/"
                         payload = {
                             "gcs_bucket": gcs_bucket_name,
                             "blob_name": uri
@@ -150,7 +139,7 @@ def render_tab3():
             st.session_state.generated_clips_list = [] # Clear previous results
 
             try:
-                api_url = f"{API_BASE_URL}/generate-clips/"
+                api_url = f"{st.session_state.API_BASE_URL}/generate-clips/"
                 payload = {
                     "workspace": workspace,
                     "gcs_bucket": gcs_bucket_name,
@@ -179,7 +168,7 @@ def render_tab3():
         
         while st.session_state.get("clips_job_status") in ["pending", "in_progress", "starting"]:
             try:
-                status_url = f"{API_BASE_URL}/jobs/{job_id}"
+                status_url = f"{st.session_state.API_BASE_URL}/jobs/{job_id}"
                 response = requests.get(status_url)
                 response.raise_for_status()
                 
@@ -218,7 +207,15 @@ def render_tab3():
                 # This assumes gcs_service is available here or we call it differently
                 # For simplicity, let's assume a helper function can be called
                 # In a real app, you might need to adjust how you get the signed URL
-                signed_url, error = generate_signed_url(gcs_bucket_name, clip_blob_name)
+                api_url = f"{st.session_state.API_BASE_URL}/gcs/signed-url"
+                params = {"gcs_bucket": gcs_bucket_name, "blob_name": clip_blob_name}
+                response = requests.get(api_url, params=params)
+                if response.status_code == 200:
+                    signed_url = response.json().get("url")
+                    error = None
+                else:
+                    signed_url = None
+                    error = response.text
                 
                 if error:
                     st.error(f"Could not get URL for `{os.path.basename(clip_blob_name)}`: {error}")

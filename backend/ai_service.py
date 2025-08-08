@@ -3,7 +3,7 @@ import google.genai as genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 from typing import Tuple, List
-from services.schemas import TrailerClipMetadata
+from schemas import TrailerClipMetadata
 
 # --- Gemini Client Initialization ---
 # Switch to Vertex AI client for GCS URI support
@@ -16,7 +16,9 @@ try:
     client = genai.Client(vertexai=True, project=project_id, location=location)
     print("Successfully initialized Vertex AI client.")
 except Exception as e:
+    import traceback
     print(f"Failed to initialize Genai Client: {e}")
+    traceback.print_exc()
     client = None
 
 # --- API Call Logic ---

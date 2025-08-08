@@ -2,10 +2,8 @@ import streamlit as st
 import os
 import requests
 import time
-from services.gcs_service import list_gcs_files
 
 # Define the base URL for the backend API
-API_BASE_URL = "http://127.0.0.1:8000"
 
 def render_tab5(
     gemini_api_key_param: str,
@@ -31,15 +29,15 @@ def render_tab5(
     gcs_metadata_files_options = ["-- Select a metadata file --"]
     
     if gcs_bucket_name:
-        actual_files, error = list_gcs_files(
-            gcs_bucket_name,
-            metadata_gcs_prefix,
-            allowed_extensions=['.json']
-        )
-        if error:
-            st.error(f"Error listing metadata files from GCS: {error}")
-        else:
+        try:
+            api_url = f"{st.session_state.API_BASE_URL}/gcs/list"
+            params = {"gcs_bucket": gcs_bucket_name, "prefix": metadata_gcs_prefix}
+            response = requests.get(api_url, params=params)
+            response.raise_for_status()
+            actual_files = response.json().get("files", [])
             gcs_metadata_files_options.extend(actual_files)
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error listing metadata files from GCS: {e}")
 
     selected_metadata_file = st.selectbox(
         "Choose a metadata file to use for clip generation:",
@@ -65,7 +63,7 @@ def render_tab5(
             st.session_state.ai_clips_job_details = "Initializing AI clip generation job..."
 
             try:
-                api_url = f"{API_BASE_URL}/generate-clips/"
+                api_url = f"{st.session_state.API_BASE_URL}/generate-clips/"
                 payload = {
                     "workspace": workspace,
                     "gcs_bucket": gcs_bucket_name,
@@ -94,7 +92,7 @@ def render_tab5(
         
         while st.session_state.get("ai_clips_job_status") in ["pending", "in_progress", "starting"]:
             try:
-                status_url = f"{API_BASE_URL}/jobs/{job_id}"
+                status_url = f"{st.session_state.API_BASE_URL}/jobs/{job_id}"
                 response = requests.get(status_url)
                 response.raise_for_status()
                 

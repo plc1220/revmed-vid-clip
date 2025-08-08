@@ -6,13 +6,14 @@ import os
 import uuid
 import shutil
 import asyncio
-import fcntl
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Import services
-from services import gcs_service, video_service, ai_service
+import gcs_service
+import video_service
+import ai_service
 
 # --- Pydantic Models for API requests ---
 class SplitRequest(BaseModel):
@@ -70,11 +71,11 @@ def _read_job(job_id: str) -> dict:
         return None
     try:
         with open(job_path, 'r') as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
             try:
                 data = json.load(f)
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+            except json.JSONDecodeError:
+                # If the file is empty or malformed, return None
+                return None
         return data
     except (IOError, json.JSONDecodeError):
         # Return None if the file is locked or empty, allowing the client to retry
@@ -83,11 +84,7 @@ def _read_job(job_id: str) -> dict:
 def _write_job(job_id: str, job_data: dict):
     job_path = _get_job_path(job_id)
     with open(job_path, 'w') as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            json.dump(job_data, f)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+        json.dump(job_data, f)
 
 # --- Temporary Storage Configuration ---
 TEMP_STORAGE_PATH = "./api_temp_storage"
@@ -579,3 +576,40 @@ async def delete_gcs_blob_endpoint(request: GCSDeleteRequest):
     if not success:
         raise HTTPException(status_code=404, detail=error)
     return {"message": f"Blob {request.blob_name} deleted successfully."}
+
+
+@app.get("/gcs/list", tags=["GCS"])
+async def gcs_list_endpoint(gcs_bucket: str, prefix: str):
+    """Lists files in a GCS bucket."""
+    files, error = gcs_service.list_gcs_files(gcs_bucket, prefix)
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return {"files": files}
+
+@app.get("/gcs/signed-url", tags=["GCS"])
+async def gcs_signed_url_endpoint(gcs_bucket: str, blob_name: str):
+    """Generates a signed URL for a GCS blob."""
+    url, error = gcs_service.generate_signed_url(gcs_bucket, blob_name)
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+    return {"url": url}
+
+@app.get("/gcs/download", tags=["GCS"])
+async def gcs_download_endpoint(gcs_bucket: str, blob_name: str):
+    """Downloads a blob from GCS."""
+    # Create a temporary file to download to
+    temp_dir = "temp_downloads"
+    os.makedirs(temp_dir, exist_ok=True)
+    local_file_path = os.path.join(temp_dir, os.path.basename(blob_name))
+
+    success, error = gcs_service.download_gcs_blob(gcs_bucket, blob_name, local_file_path)
+    if not success:
+        raise HTTPException(status_code=500, detail=error)
+
+    with open(local_file_path, 'r') as f:
+        content = json.load(f)
+
+    # Clean up the temp file
+    os.remove(local_file_path)
+
+    return content

@@ -66,9 +66,13 @@ The application leverages Google's Gemini model for its AI capabilities. It is u
 ### Prerequisites
 
 1.  **Python Environment**: Ensure you have Python 3.9+ installed.
-2.  **Install Dependencies**: Install all required Python packages.
+2.  **Install Dependencies**: Install the dependencies for both the frontend and backend.
     ```bash
-    pip install -r requirements.txt
+    # Install backend dependencies
+    pip install -r backend/requirements.txt
+
+    # Install frontend dependencies
+    pip install -r frontend/requirements.txt
     ```
 3.  **Install Playwright Browsers**: Required for running the UI tests.
     ```bash
@@ -77,14 +81,20 @@ The application leverages Google's Gemini model for its AI capabilities. It is u
 
 ### Configuration
 
-Create a `.env` file in the root directory of the project and add the following environment variables.
+Create a `.env` file in both the `frontend` and `backend` directories.
 
+**`backend/.env`**
 ```
-GEMINI_API_KEY="YOUR_GOOGLE_GEMINI_API_KEY"
-DEFAULT_GCS_BUCKET="your-default-gcs-bucket-name"
+GOOGLE_APPLICATION_CREDENTIALS="your-gcs-credentials.json"
+GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
+GOOGLE_CLOUD_LOCATION="your-gcp-location"
+DEFAULT_GCS_BUCKET="your-default-gcs-bucket"
 ```
 
-You will also need to set up Google Cloud authentication. Ensure your GCS credentials JSON file is available and the path is set in your environment if required by your setup.
+**`frontend/.env`**
+```
+API_BASE_URL="http://127.0.0.1:8000"
+```
 
 ### Running the Application
 
@@ -92,21 +102,33 @@ The application requires both the backend and frontend servers to be running sim
 
 1.  **Run the Backend API:**
     ```bash
-    uvicorn api.main:app --reload
+    (cd backend && uvicorn main:app --reload)
     ```
     The API will be available at `http://127.0.0.1:8000`.
 
 2.  **Run the Streamlit App:**
     ```bash
-    streamlit run app.py
+    (cd frontend && streamlit run app.py)
     ```
     The UI will be accessible in your browser, typically at `http://localhost:8501`.
 
 ## Deployment
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/plc1220/revmed-vid-clip.git&cloudshell_tutorial=README.md)
+The frontend and backend are deployed as separate services on Google Cloud Run. Each service has its own `cloudbuild.yaml` file for automated builds and deployments.
 
-Click the button above to deploy this application to Google Cloud Run. This will open Google Cloud Shell, clone the repository, and guide you through the deployment process.
+### Backend Deployment
+
+To deploy the backend, run the following command from the root directory:
+```bash
+gcloud builds submit --config backend/cloudbuild.yaml backend/
+```
+
+### Frontend Deployment
+
+To deploy the frontend, run the following command from the root directory:
+```bash
+gcloud builds submit --config frontend/cloudbuild.yaml frontend/
+```
 
 ## API Documentation (Swagger UI)
 

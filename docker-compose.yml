@@ -1,0 +1,27 @@
+version: '3.8'
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8080"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./gcs_credentials.json:/app/gcs_credentials.json
+    networks:
+      - revmed-network
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://backend:8080
+    depends_on:
+      - backend
+    networks:
+      - revmed-network
+
+networks:
+  revmed-network:
+    driver: bridge
