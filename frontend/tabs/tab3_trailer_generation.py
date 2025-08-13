@@ -66,7 +66,7 @@ def render_tab3():
     st.session_state.metadata_selection = {uri: current_selection.get(uri, False) for uri in gcs_metadata_files}
 
     # --- Selection Controls ---
-    col1, col2, _ = st.columns([0.15, 0.15, 0.7])
+    col1, col2, col3, _ = st.columns([0.15, 0.15, 0.2, 0.55])
     with col1:
         if st.button("Select All", key="select_all_metadata"):
             for uri in gcs_metadata_files:
@@ -77,6 +77,42 @@ def render_tab3():
             for uri in gcs_metadata_files:
                 st.session_state.metadata_selection[uri] = False
             st.rerun()
+    with col3:
+        if st.button("Delete Selected", key="delete_selected_metadata"):
+            selected_metadata_to_delete = [uri for uri, selected in st.session_state.metadata_selection.items() if selected]
+            if not selected_metadata_to_delete:
+                st.warning("No metadata files selected for deletion.")
+            else:
+                try:
+                    api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
+                    payload = {
+                        "gcs_bucket": gcs_bucket_name,
+                        "blob_names": selected_metadata_to_delete
+                    }
+                    response = requests.post(api_url, json=payload)
+                    response.raise_for_status()
+                    
+                    deleted_files = response.json().get("deleted_files", [])
+                    failed_files = response.json().get("failed_files", {})
+
+                    if deleted_files:
+                        st.success(f"Successfully deleted {len(deleted_files)} metadata file(s).")
+                        load_metadata_content.clear()
+                        # Unselect deleted files
+                        for uri in deleted_files:
+                            if uri in st.session_state.metadata_selection:
+                                st.session_state.metadata_selection[uri] = False
+                    
+                    if failed_files:
+                        for uri, error in failed_files.items():
+                            st.error(f"Failed to delete {os.path.basename(uri)}: {error}")
+                    
+                    st.rerun()
+
+                except requests.exceptions.RequestException as e:
+                    st.error(f"An API error occurred during batch deletion: {e}")
+                except Exception as e:
+                    st.error(f"An unexpected error occurred: {e}")
 
     # --- Metadata File List with Checkboxes ---
     st.write("Choose metadata files to use for clip generation:")
@@ -229,4 +265,4 @@ def render_tab3():
         if st.button("Clear Generated Clips", key="clear_clips_button"):
             st.session_state.generated_clips_list = []
             st.rerun()
-
+    

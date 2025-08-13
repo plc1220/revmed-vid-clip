@@ -139,39 +139,70 @@ def create_clip(source_video_path: str, output_clip_path: str, start_seconds: fl
         return False, error_msg
 
 
-def join_videos(clip_paths: List[str], output_path: str) -> Tuple[bool, str]:
+def join_videos(clip_paths: List[str], output_path: str, fade_duration: float = 0.5) -> Tuple[bool, str]:
     """
-    Joins a list of video files into a single video.
+    Joins a list of video files into a single video, with a fade-out effect on each clip.
     Returns a tuple of (success_boolean, error_message_string).
     """
     if not clip_paths:
         return False, "No clip paths provided for joining."
 
-    # Create a temporary file list for ffmpeg concatenation
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as tmp_list_file:
-        for path in clip_paths:
-            # FFmpeg requires special handling of characters in file paths
-            # FFmpeg requires absolute paths to correctly locate the files.
-            absolute_path = os.path.abspath(path)
-            sanitized_path = absolute_path.replace("'", "'\\''")
-            tmp_list_file.write(f"file '{sanitized_path}'\n")
-        concat_list_filename = tmp_list_file.name
-
     try:
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
+        # Process each clip to add a fade-out effect
+        faded_clips = []
+        temp_dir = tempfile.mkdtemp()
+        
+        for i, clip_path in enumerate(clip_paths):
+            duration, err = get_video_duration(clip_path)
+            if err:
+                print(f"Warning: Could not get duration for {clip_path}. Skipping fade. Error: {err}")
+                faded_clips.append(ffmpeg.input(clip_path))
+                continue
+
+            fade_start_time = max(0, duration - fade_duration)
+            
+            faded_clip_path = os.path.join(temp_dir, f"faded_{i}.mp4")
+
+            try:
+                (
+                    ffmpeg
+                    .input(clip_path)
+                    .video
+                    .filter('fade', type='out', start_time=fade_start_time, duration=fade_duration)
+                    .output(faded_clip_path, vcodec='libx264', acodec='aac', strict='experimental')
+                    .run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                )
+                faded_clips.append(ffmpeg.input(faded_clip_path))
+            except ffmpeg.Error as e:
+                # If fading fails, use the original clip and log an error
+                print(f"Error applying fade effect to {clip_path}: {e.stderr.decode('utf8')}")
+                faded_clips.append(ffmpeg.input(clip_path))
+
+
+        # Concatenate all processed (or original) clips
         (
             ffmpeg
-            .input(concat_list_filename, format='concat', safe=0)
-            .output(output_path, c='copy', vsync='vfr')
+            .concat(*faded_clips, v=1, a=1)
+            .output(output_path, vcodec='libx264', acodec='aac', strict='experimental')
             .run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
         )
+        
+        # Cleanup temporary faded clips
+        for i in range(len(clip_paths)):
+            temp_faded_path = os.path.join(temp_dir, f"faded_{i}.mp4")
+            if os.path.exists(temp_faded_path):
+                os.remove(temp_faded_path)
+        os.rmdir(temp_dir)
+
         return True, ""
     except ffmpeg.Error as e:
-        error_msg = f"Error during ffmpeg concatenation: {e.stderr.decode('utf8')}"
+        error_msg = f"Error during ffmpeg video joining with fade: {e.stderr.decode('utf8')}"
         print(error_msg)
         return False, error_msg
-    finally:
-        if os.path.exists(concat_list_filename):
-            os.remove(concat_list_filename)
+    except Exception as e:
+        error_msg = f"An unexpected error occurred during video joining: {e}"
+        print(error_msg)
+        return False, error_msg

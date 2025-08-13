@@ -10,8 +10,8 @@ load_dotenv()
 from tabs.tab1_video_split import render_tab1
 from tabs.tab2_metadata_generation import render_tab2
 from tabs.tab3_trailer_generation import render_tab3
-from tabs.tab4_video_joining import render_tab4
-from tabs.tab5_generate_clips_ai import render_tab5
+from tabs.tab4_refine_clips import render_tab4
+from tabs.tab5_video_joining import render_tab5
 
 # --- App Configuration ---
 st.set_page_config(layout="wide")
@@ -48,8 +48,8 @@ def render_main_app():
         "1: Video Split",
         "2: Metadata Generation",
         "3: Clip Generation",
-        "4: Video Joining",
-        "5: AI Clip Generation"
+        "4: Refine Clips by Cast",
+        "5: Video Joining"
     ])
 
     with tab1:
@@ -72,11 +72,7 @@ def render_main_app():
         render_tab4()
 
     with tab5:
-        render_tab5(
-            gemini_api_key_param=st.session_state.GEMINI_API_KEY,
-            ai_model_name_param=st.session_state.AI_MODEL_NAME,
-            gemini_ready_param=bool(st.session_state.GEMINI_API_KEY)
-        )
+        render_tab5()
 
 # --- Workspace Selection ---
 if not st.session_state.workspace:

@@ -57,6 +57,10 @@ def list_gcs_files(bucket_name: str, prefix: str = "", allowed_extensions: List[
 
     try:
         storage_client = get_storage_client()
+    except IOError as e:
+        return [], str(e)
+
+    try:
         bucket = storage_client.bucket(bucket_name)
         if not bucket.exists():
             return [], f"Bucket '{bucket_name}' does not exist or you don't have access."

@@ -37,7 +37,7 @@ def list_gcs_clips_for_display(bucket_name, prefix):
     except requests.exceptions.RequestException as e:
         return [], f"Error processing GCS clips for display: {e}"
 
-def render_tab4():
+def render_tab5():
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
     workspace = st.session_state.workspace
     st.header("🎬 Video Stitcher")
@@ -53,9 +53,33 @@ def render_tab4():
     if 'join_job_details' not in st.session_state:
         st.session_state.join_job_details = ""
 
-    clips_gcs_prefix = os.path.join(workspace, "clips/")
+    # --- Source Selection ---
+    st.subheader("1. Select Clip Source")
+    source_options = {
+        "Refined Clips": os.path.join(workspace, "refined_clips/"),
+        "Original Clips": os.path.join(workspace, "clips/")
+    }
+    
+    if 'clip_source_folder' not in st.session_state:
+        st.session_state.clip_source_folder = "Refined Clips"
+
+    def on_source_change():
+        st.session_state.selected_clips_for_joining = [] # Clear selection on source change
+
+    selected_source_name = st.selectbox(
+        "Choose the folder to get clips from:",
+        options=list(source_options.keys()),
+        index=list(source_options.keys()).index(st.session_state.clip_source_folder),
+        key="clip_source_selector",
+        on_change=on_source_change
+    )
+    st.session_state.clip_source_folder = selected_source_name
+    clips_gcs_prefix = source_options[selected_source_name]
+    
     joined_clips_gcs_prefix = "joined_clips/" # This can remain global or be namespaced too
 
+    st.markdown("---")
+    st.subheader("2. Select Clips to Join")
     clips_data, error = list_gcs_clips_for_display(gcs_bucket_name, clips_gcs_prefix)
     if error:
         st.error(error)

@@ -7,6 +7,10 @@ import uuid
 import shutil
 import asyncio
 from dotenv import load_dotenv
+import sys
+
+# Add the backend directory to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 
 load_dotenv()
 
@@ -14,8 +18,16 @@ load_dotenv()
 import gcs_service
 import video_service
 import ai_service
+import requests
 
 # --- Pydantic Models for API requests ---
+class FaceClipGenerationRequest(BaseModel):
+    workspace: str
+    gcs_bucket: str
+    gcs_video_uri: str
+    gcs_cast_photo_uris: list[str]
+    output_gcs_prefix: str
+
 class SplitRequest(BaseModel):
     workspace: str
     gcs_bucket: str
@@ -393,6 +405,74 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
         if os.path.exists(job_temp_dir):
             shutil.rmtree(job_temp_dir)
 
+def process_face_clip_generation(job_id: str, request: FaceClipGenerationRequest):
+    """Orchestrates face recognition-based clip generation by calling the microservice."""
+    _write_job(job_id, {"status": "in_progress", "details": "Starting face recognition clip generation."})
+    print(f"Job {job_id}: Calling face recognition microservice for video {request.gcs_video_uri}.")
+
+    job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
+    os.makedirs(job_temp_dir, exist_ok=True)
+    
+    generated_clips_paths = []
+
+    try:
+        # 1. Call the face recognition microservice
+        fr_service_url = "http://face-recognition-service:8001/process-video/"
+        payload = {
+            "gcs_bucket": request.gcs_bucket,
+            "gcs_video_uri": request.gcs_video_uri,
+            "gcs_cast_photo_uris": request.gcs_cast_photo_uris,
+        }
+        response = requests.post(fr_service_url, json=payload)
+        response.raise_for_status()
+        scenes = response.json()
+
+        if not scenes:
+            _write_job(job_id, {"status": "completed", "details": "No scenes found with the specified cast members.", "generated_clips": []})
+            return
+
+        # 2. Download the source video once for clipping
+        _write_job(job_id, {"status": "in_progress", "details": f"Downloading video for clipping: {request.gcs_video_uri}"})
+        video_basename = os.path.basename(request.gcs_video_uri)
+        local_video_path = os.path.join(job_temp_dir, video_basename)
+        success, error = gcs_service.download_gcs_blob(request.gcs_bucket, request.gcs_video_uri, local_video_path)
+        if not success:
+            raise Exception(f"Failed to download video {request.gcs_video_uri}: {error}")
+
+        # 3. Create and upload clips based on the scenes returned by the microservice
+        for i, scene in enumerate(scenes):
+            start_sec, end_sec = scene["start_time"], scene["end_time"]
+            details = f"Generating clip {i+1}/{len(scenes)}..."
+            _write_job(job_id, {"status": "in_progress", "details": details})
+            
+            clip_filename = f"{os.path.splitext(video_basename)[0]}_face_clip_{i+1}.mp4"
+            local_clip_path = os.path.join(job_temp_dir, clip_filename)
+
+            success, error = video_service.create_clip(local_video_path, local_clip_path, start_sec, end_sec)
+            if not success:
+                print(f"Job {job_id}: Failed to create clip {clip_filename}. Error: {error}")
+                continue
+
+            clip_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, clip_filename)
+            success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_clip_path, clip_blob_name)
+            if success:
+                generated_clips_paths.append(clip_blob_name)
+            else:
+                print(f"Job {job_id}: Failed to upload clip {clip_blob_name}. Error: {error}")
+
+        final_details = f"Successfully generated {len(generated_clips_paths)} clips based on face recognition."
+        _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clips_paths})
+        print(f"Job {job_id}: {final_details}")
+
+    except requests.exceptions.RequestException as e:
+        _write_job(job_id, {"status": "failed", "details": f"Failed to connect to face recognition service: {e}"})
+    except Exception as e:
+        _write_job(job_id, {"status": "failed", "details": str(e)})
+        print(f"Job {job_id}: Failed - {str(e)}")
+    finally:
+        if os.path.exists(job_temp_dir):
+            shutil.rmtree(job_temp_dir)
+
 def process_video_joining(job_id: str, request: JoinRequest):
     """The actual logic for the video joining background task."""
     _write_job(job_id, {"status": "in_progress", "details": "Starting video joining process."})
@@ -524,6 +604,16 @@ async def generate_clips_endpoint(request: ClipGenerationRequest, background_tas
     _write_job(job_id, {"status": "pending", "details": "Job has been accepted and is waiting to start."})
     background_tasks.add_task(process_clip_generation, job_id, request)
     return {"message": "Clip generation job started.", "job_id": job_id}
+
+@app.post("/generate-clips-by-face/", tags=["Video Processing"], status_code=202)
+async def generate_clips_by_face_endpoint(request: FaceClipGenerationRequest, background_tasks: BackgroundTasks):
+    """
+    Generates clips from a video based on face recognition of specified cast members.
+    """
+    job_id = str(uuid.uuid4())
+    _write_job(job_id, {"status": "pending", "details": "Job received for face-based clip generation."})
+    background_tasks.add_task(process_face_clip_generation, job_id, request)
+    return {"job_id": job_id}
 
 @app.get("/workspaces/", tags=["Workspaces"])
 async def list_workspaces_endpoint(gcs_bucket: str):

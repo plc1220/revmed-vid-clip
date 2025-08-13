@@ -11,6 +11,13 @@ services:
     networks:
       - revmed-network
 
+  face-recognition-service:
+    build: ./backend/face_recognition_microservice
+    ports:
+      - "8001:8001"
+    networks:
+      - revmed-network
+
   frontend:
     build: ./frontend
     ports:

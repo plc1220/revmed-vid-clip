@@ -125,4 +125,4 @@ def render_tab1(allowed_video_extensions_param: list):
                 status_placeholder.error(f"Could not get job status. Connection error: {e}")
                 break # Stop polling on connection error
             
-            time.sleep(5) # Poll every 5 seconds
+            time.sleep(2) # Poll every 5 seconds

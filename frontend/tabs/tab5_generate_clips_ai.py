@@ -102,6 +102,16 @@ def render_tab5(
 
                 if st.session_state.ai_clips_job_status == "completed":
                     status_placeholder.success(f"✅ **Job Complete:** {st.session_state.ai_clips_job_details}")
+                    
+                    # Display the generated video
+                    result = job_data.get("result", {})
+                    video_url = result.get("gcs_output_url")
+                    
+                    if video_url:
+                        st.video(video_url)
+                    else:
+                        st.warning("Could not find video URL in job results.")
+
                     st.write("Debug Info: Full job data response")
                     st.json(job_data)
                     st.session_state.ai_clips_job_id = None
