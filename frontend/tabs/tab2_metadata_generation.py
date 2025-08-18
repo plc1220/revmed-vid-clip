@@ -91,6 +91,9 @@ def render_tab2(
         except requests.exceptions.RequestException as e:
             st.error(f"Error listing segment files from GCS: {e}")
             gcs_video_uris = []
+        except Exception as e:
+            st.warning(f"No video segment files found in 'gs://{gcs_bucket_name}/{segments_prefix}'. Please split a video in Step 1. Details: {e}")
+            gcs_video_uris = []
 
         if not gcs_video_uris:
             st.warning(f"No video segment files found in 'gs://{gcs_bucket_name}/{segments_prefix}'. Please split a video in Step 1.")
@@ -128,7 +131,7 @@ def render_tab2(
                         api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
                         payload = {
                             "gcs_bucket": gcs_bucket_name,
-                            "blob_names": selected_videos_to_delete
+                            "blob_names": [uri.split(f"gs://{gcs_bucket_name}/")[1] for uri in selected_videos_to_delete]
                         }
                         response = requests.post(api_url, json=payload)
                         response.raise_for_status()

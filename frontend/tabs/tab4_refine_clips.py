@@ -21,6 +21,9 @@ def render_tab4():
     except requests.exceptions.RequestException as e:
         st.error(f"Error listing clips from GCS: {e}")
         gcs_clips = []
+    except Exception as e:
+        st.warning(f"No clips found in 'gs://{gcs_bucket_name}/{clips_gcs_prefix}'. Please generate clips in Step 3 first. Details: {e}")
+        gcs_clips = []
 
     if not gcs_clips:
         st.warning(f"No clips found in 'gs://{gcs_bucket_name}/{clips_gcs_prefix}'. Please generate clips in Step 3 first.")
@@ -55,7 +58,7 @@ def render_tab4():
                     api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
                     payload = {
                         "gcs_bucket": gcs_bucket_name,
-                        "blob_names": selected_clips_to_delete
+                        "blob_names": [uri.split(f"gs://{gcs_bucket_name}/")[1] for uri in selected_clips_to_delete]
                     }
                     response = requests.post(api_url, json=payload)
                     response.raise_for_status()

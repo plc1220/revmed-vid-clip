@@ -2,8 +2,10 @@ steps:
   # Build and push frontend
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-t', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/frontend:$BUILD_ID', '.']
+    dir: 'frontend'
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/frontend:$BUILD_ID']
+    dir: 'frontend'
 
   # Deploy frontend
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'

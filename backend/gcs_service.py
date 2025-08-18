@@ -1,25 +1,31 @@
 import os
+import logging
 from google.cloud import storage
 from typing import List, Tuple
 import datetime
-
 # --- Centralized GCS Client Initialization ---
 _storage_client = None
+logging.basicConfig(level=logging.INFO)
 
 def get_storage_client() -> storage.Client:
     """
-    Initializes and returns a singleton GCS storage client.
-    It uses credentials from the environment variable GOOGLE_APPLICATION_CREDENTIALS.
+    Initializes and returns a singleton GCS storage client
+    using the credentials.json file.
     """
     global _storage_client
     if _storage_client is None:
-        credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        logging.info("GCS client is not initialized. Initializing...")
         try:
-            if credentials_path:
-                _storage_client = storage.Client.from_service_account_json(credentials_path)
-            else:
-                _storage_client = storage.Client()
+            # Explicitly use the credentials file copied into the container
+            credentials_path = "/app/credentials.json"
+            if not os.path.exists(credentials_path):
+                raise FileNotFoundError("credentials.json not found in the container at /app/credentials.json")
+            
+            logging.info(f"Initializing GCS client using credentials from: {credentials_path}")
+            _storage_client = storage.Client.from_service_account_json(credentials_path)
+            logging.info("GCS client initialized successfully.")
         except Exception as e:
+            logging.error(f"Failed to initialize GCS client: {e}", exc_info=True)
             raise IOError(f"Failed to initialize GCS client: {e}") from e
             
     return _storage_client
@@ -110,6 +116,29 @@ def download_gcs_blob(bucket_name: str, source_blob_name: str, destination_file_
         print(error_msg)
         return False, error_msg
 
+def download_gcs_blob_chunk(bucket_name: str, source_blob_name: str, destination_file_name: str, chunk_size_bytes: int) -> Tuple[bool, str]:
+    """
+    Downloads the first chunk of a blob to a local file.
+    """
+    try:
+        storage_client = get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(source_blob_name)
+
+        destination_dir = os.path.dirname(destination_file_name)
+        if destination_dir:
+            os.makedirs(destination_dir, exist_ok=True)
+        
+        # Download only the first chunk_size_bytes
+        with open(destination_file_name, "wb") as f:
+            blob.download_to_file(f, start=0, end=chunk_size_bytes - 1)
+            
+        return True, ""
+    except Exception as e:
+        error_msg = f"Error downloading chunk from GCS blob gs://{bucket_name}/{source_blob_name} to {destination_file_name}: {e}"
+        print(error_msg)
+        return False, error_msg
+
 def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_name: str) -> Tuple[bool, str]:
     """
     Uploads a file to the bucket.
@@ -165,6 +194,27 @@ def generate_signed_url(bucket_name: str, blob_name: str) -> Tuple[str, str]:
     except Exception as e:
         error_msg = f"Error generating signed URL for gs://{bucket_name}/{blob_name}: {e}"
         print(error_msg)
+        return "", error_msg
+def generate_v4_signed_upload_url(bucket_name: str, blob_name: str, content_type: str) -> Tuple[str, str]:
+    """
+    Generates a v4 signed URL for uploading a file using the PUT method.
+    This method requires a service account key file.
+    """
+    try:
+        storage_client = get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(minutes=15),
+            method="PUT",
+            content_type=content_type,
+        )
+        return url, ""
+    except Exception as e:
+        error_msg = f"Error generating signed UPLOAD URL for gs://{bucket_name}/{blob_name}: {e}"
+        logging.error(error_msg, exc_info=True)
         return "", error_msg
 
 def list_workspaces(bucket_name: str) -> Tuple[List[str], str]:

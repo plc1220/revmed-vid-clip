@@ -21,7 +21,7 @@ st.title("🎬 Rev-Media Video Assistant")
 CONFIG_KEYS = {
     "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
     "AI_MODEL_NAME": "gemini-2.5-flash",
-    "GCS_BUCKET_NAME": os.getenv("DEFAULT_GCS_BUCKET", "lc-ccob-test"),
+    "GCS_BUCKET_NAME": os.getenv("DEFAULT_GCS_BUCKET", "revmedia-vid-clip-bucket"),
     "GCS_PROCESSED_VIDEO_PREFIX": "processed/",
     "GCS_METADATA_PREFIX": "metadata/",
     "GCS_OUTPUT_CLIPS_PREFIX": "clips/",
