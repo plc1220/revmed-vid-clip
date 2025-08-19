@@ -36,8 +36,6 @@ def list_gcs_clips_for_display(bucket_name, prefix):
         return clips_data, None
     except requests.exceptions.RequestException as e:
         return [], f"Error processing GCS clips for display: {e}"
-    except Exception as e:
-        return [], f"No video clips found. Details: {e}"
 
 def render_tab5():
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME

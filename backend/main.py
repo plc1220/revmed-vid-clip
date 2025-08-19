@@ -1,8 +1,6 @@
 import subprocess
 import json
-import logging
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Form, UploadFile, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Form, UploadFile
 from pydantic import BaseModel
 import os
 import uuid
@@ -10,7 +8,6 @@ import shutil
 import asyncio
 from dotenv import load_dotenv
 import sys
-import google.auth
 
 # Add the backend directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
@@ -61,10 +58,6 @@ class GCSDeleteRequest(BaseModel):
     gcs_bucket: str
     blob_name: str
 
-class GCSDeleteBatchRequest(BaseModel):
-    gcs_bucket: str
-    blob_names: list[str]
-
 class UploadResponse(BaseModel):
     gcs_bucket: str
     gcs_blob_name: str
@@ -75,23 +68,6 @@ app = FastAPI(
     title="Rev-Med Video Processing API",
     description="An API for splitting, analyzing, and processing video files.",
     version="1.0.0"
-)
-
-# --- CORS Configuration ---
-# This allows the frontend (running on http://localhost:8501) to communicate with the backend.
-origins = [
-    "http://localhost",
-    "http://localhost:8501",
-    "http://localhost:8000",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # Allow all for now
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Access-Control-Allow-Private-Network"],
 )
 
 # --- File-based Job Store ---
@@ -139,22 +115,20 @@ def process_splitting(job_id: str, request: SplitRequest):
     
     try:
         # 1. Download video from GCS
-        # The GCS bucket is mounted at /gcs. No need to download.
-        gcs_mounted_video_path = os.path.join("/gcs", request.gcs_blob_name)
-        
-        if not os.path.exists(gcs_mounted_video_path):
-            raise Exception(f"Video file not found at mounted path: {gcs_mounted_video_path}")
+        _write_job(job_id, {"status": "in_progress", "details": f"Downloading gs://{request.gcs_bucket}/{request.gcs_blob_name}..."})
+        print(f"Job {job_id}: Downloading gs://{request.gcs_bucket}/{request.gcs_blob_name}...")
+        local_video_path = os.path.join(job_temp_dir, os.path.basename(request.gcs_blob_name))
+        success, error = gcs_service.download_gcs_blob(request.gcs_bucket, request.gcs_blob_name, local_video_path)
+        if not success:
+            raise Exception(f"GCS Download failed: {error}")
 
-        _write_job(job_id, {"status": "in_progress", "details": f"Processing video from mounted path: {gcs_mounted_video_path}"})
-        print(f"Job {job_id}: Processing video from mounted path: {gcs_mounted_video_path}")
-
-        # 2. Split the video directly from the mounted GCS path
+        # 2. Split the video
         _write_job(job_id, {"status": "in_progress", "details": "Splitting video into segments..."})
         print(f"Job {job_id}: Splitting video into segments...")
         split_output_dir = os.path.join(job_temp_dir, "split_output")
         os.makedirs(split_output_dir, exist_ok=True)
         
-        segment_paths, error = video_service.split_video(gcs_mounted_video_path, request.segment_duration, split_output_dir)
+        segment_paths, error = video_service.split_video(local_video_path, request.segment_duration, split_output_dir)
         if error:
             # Even if there's an error, some segments might have been created. We'll upload them.
             _write_job(job_id, {"status": "in_progress", "details": f"Splitting partially failed: {error}. Uploading successful segments."})
@@ -694,26 +668,6 @@ async def delete_gcs_blob_endpoint(request: GCSDeleteRequest):
     return {"message": f"Blob {request.blob_name} deleted successfully."}
 
 
-@app.post("/gcs/delete-batch", tags=["GCS"])
-async def delete_gcs_blobs_batch_endpoint(request: GCSDeleteBatchRequest):
-    """
-    Deletes a batch of blobs from a specified GCS bucket.
-    """
-    deleted_files = []
-    failed_files = {}
-
-    for blob_name in request.blob_names:
-        success, error = gcs_service.delete_gcs_blob(request.gcs_bucket, blob_name)
-        if success:
-            deleted_files.append(blob_name)
-        else:
-            failed_files[blob_name] = error
-    
-    if failed_files:
-        return {"deleted_files": deleted_files, "failed_files": failed_files}
-
-    return {"deleted_files": deleted_files, "failed_files": {}}
-
 @app.get("/gcs/list", tags=["GCS"])
 async def gcs_list_endpoint(gcs_bucket: str, prefix: str):
     """Lists files in a GCS bucket."""
@@ -729,33 +683,6 @@ async def gcs_signed_url_endpoint(gcs_bucket: str, blob_name: str):
     if error:
         raise HTTPException(status_code=500, detail=error)
     return {"url": url}
-class UploadURLRequest(BaseModel):
-    file_name: str
-    content_type: str
-    workspace: str
-    gcs_bucket: str
-
-@app.post("/gcs/generate-upload-url", tags=["GCS"])
-async def gcs_generate_upload_url_endpoint(payload: UploadURLRequest):
-    """
-    Generates a v4 signed URL for uploading a file directly to GCS.
-    """
-    try:
-        # Construct the blob name within the workspace's uploads folder
-        blob_name = os.path.join(payload.workspace, "uploads", payload.file_name)
-        
-        signed_url, error = gcs_service.generate_v4_signed_upload_url(
-            bucket_name=payload.gcs_bucket,
-            blob_name=blob_name,
-            content_type=payload.content_type
-        )
-        
-        if error:
-            raise HTTPException(status_code=500, detail=error)
-            
-        return {"signed_url": signed_url, "gcs_blob_name": blob_name}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
 
 @app.get("/gcs/download", tags=["GCS"])
 async def gcs_download_endpoint(gcs_bucket: str, blob_name: str):

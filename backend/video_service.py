@@ -5,47 +5,34 @@ import subprocess
 import tempfile
 import uuid
 from typing import List, Tuple
-from gcs_service import download_gcs_blob_chunk
+
 
 def get_video_duration(video_path: str) -> Tuple[float, str]:
     """
     Gets the duration of a video file in seconds using ffprobe.
-    For GCS paths, it downloads a small chunk to a temporary file to avoid gcsfuse issues.
     Returns a tuple of (duration_in_seconds, error_message_string).
     """
-    temp_file = None
     try:
-        probe_path = video_path
-        # If the path is a GCS FUSE path, download a chunk to a temp file
-        if video_path.startswith("/gcs/"):
-            parts = video_path.split('/')
-            bucket_name = parts[2]
-            blob_name = '/'.join(parts[3:])
-            
-            # Create a temporary file to download the chunk
-            temp_fd, temp_file = tempfile.mkstemp(suffix=os.path.splitext(video_path)[1])
-            os.close(temp_fd)
-            
-            # Download the first 5MB, which is usually enough for metadata
-            chunk_size = 5 * 1024 * 1024
-            success, err = download_gcs_blob_chunk(bucket_name, blob_name, temp_file, chunk_size)
-            if not success:
-                return 0.0, f"Failed to download video chunk: {err}"
-            probe_path = temp_file
-
-        # Use ffmpeg-python's probe method on the local (or chunked) file
-        probe = ffmpeg.probe(probe_path)
-        duration = float(probe['format']['duration'])
-        
-        if duration < 0:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", video_path,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True,
+        )
+        duration_seconds = float(result.stdout.strip())
+        if duration_seconds < 0:
             return 0.0, "FFprobe reported a negative duration."
-        return duration, ""
-
-    except ffmpeg.Error as e:
-        error_msg = f"Error getting duration for {os.path.basename(video_path)} with ffprobe. stderr: {e.stderr.decode('utf8')}"
+        return duration_seconds, ""
+    except FileNotFoundError:
+        error_msg = "`ffprobe` command not found. Ensure FFmpeg is installed and in the system's PATH."
+        print(f"ERROR: {error_msg}")
+        return 0.0, error_msg
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Error getting duration for {os.path.basename(video_path)} with ffprobe. stderr: {e.stderr}"
         print(error_msg)
         return 0.0, error_msg
-    except (KeyError, ValueError) as e:
+    except ValueError as e:
         error_msg = f"Error parsing ffprobe duration output for {os.path.basename(video_path)}: {e}."
         print(error_msg)
         return 0.0, error_msg
@@ -53,10 +40,6 @@ def get_video_duration(video_path: str) -> Tuple[float, str]:
         error_msg = f"Unexpected error getting duration for {os.path.basename(video_path)}: {e}"
         print(error_msg)
         return 0.0, error_msg
-    finally:
-        # Clean up the temporary file if it was created
-        if temp_file and os.path.exists(temp_file):
-            os.remove(temp_file)
 
 def split_video(video_path: str, segment_duration_seconds: int, output_dir: str) -> Tuple[List[str], str]:
     """
@@ -158,78 +141,68 @@ def create_clip(source_video_path: str, output_clip_path: str, start_seconds: fl
 
 def join_videos(clip_paths: List[str], output_path: str, fade_duration: float = 0.5) -> Tuple[bool, str]:
     """
-    Joins a list of video files into a single video using the concat demuxer method,
-    which is more robust. A fade-out effect is applied to each clip.
+    Joins a list of video files into a single video, with a fade-out effect on each clip.
     Returns a tuple of (success_boolean, error_message_string).
     """
     if not clip_paths:
         return False, "No clip paths provided for joining."
 
-    temp_dir = None
     try:
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
-        temp_dir = tempfile.mkdtemp()
 
-        # 1. Create intermediate clips with fade-out
-        intermediate_clips = []
+        # Process each clip to add a fade-out effect
+        faded_clips = []
+        temp_dir = tempfile.mkdtemp()
+        
         for i, clip_path in enumerate(clip_paths):
             duration, err = get_video_duration(clip_path)
             if err:
-                print(f"Warning: Could not get duration for {clip_path}, skipping. Error: {err}")
+                print(f"Warning: Could not get duration for {clip_path}. Skipping fade. Error: {err}")
+                faded_clips.append(ffmpeg.input(clip_path))
                 continue
 
-            # Create a temporary path for the faded clip
-            temp_faded_path = os.path.join(temp_dir, f"faded_{i}.ts")
+            fade_start_time = max(0, duration - fade_duration)
             
-            # Apply fade out to both video and audio
-            fade_start = max(0, duration - fade_duration)
-            
+            faded_clip_path = os.path.join(temp_dir, f"faded_{i}.mp4")
+
             try:
                 (
                     ffmpeg
                     .input(clip_path)
-                    .output(
-                        temp_faded_path,
-                        vf=f'fade=t=out:st={fade_start}:d={fade_duration}',
-                        af=f'afade=t=out:st={fade_start}:d={fade_duration}',
-                        vcodec='libx264',
-                        acodec='aac',
-                        # Use MPEG-TS format for concatenation
-                        f='mpegts'
-                    )
+                    .video
+                    .filter('fade', type='out', start_time=fade_start_time, duration=fade_duration)
+                    .output(faded_clip_path, vcodec='libx264', acodec='aac', strict='experimental')
                     .run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
                 )
-                intermediate_clips.append(temp_faded_path)
+                faded_clips.append(ffmpeg.input(faded_clip_path))
             except ffmpeg.Error as e:
-                print(f"Error applying fade to {os.path.basename(clip_path)}, skipping this clip. FFmpeg: {e.stderr.decode('utf8')}")
+                # If fading fails, use the original clip and log an error
+                print(f"Error applying fade effect to {clip_path}: {e.stderr.decode('utf8')}")
+                faded_clips.append(ffmpeg.input(clip_path))
 
-        if not intermediate_clips:
-            return False, "No clips could be processed for joining."
 
-        # 2. Use the concat protocol to join the intermediate files
-        # This is more robust than the concat filter
-        concat_input = "concat:" + "|".join(intermediate_clips)
-        
+        # Concatenate all processed (or original) clips
         (
             ffmpeg
-            .input(concat_input, f='mpegts', c='copy')
+            .concat(*faded_clips, v=1, a=1)
             .output(output_path, vcodec='libx264', acodec='aac', strict='experimental')
             .run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
         )
+        
+        # Cleanup temporary faded clips
+        for i in range(len(clip_paths)):
+            temp_faded_path = os.path.join(temp_dir, f"faded_{i}.mp4")
+            if os.path.exists(temp_faded_path):
+                os.remove(temp_faded_path)
+        os.rmdir(temp_dir)
 
         return True, ""
     except ffmpeg.Error as e:
-        error_msg = f"Error during ffmpeg video joining: {e.stderr.decode('utf8')}"
+        error_msg = f"Error during ffmpeg video joining with fade: {e.stderr.decode('utf8')}"
         print(error_msg)
         return False, error_msg
     except Exception as e:
         error_msg = f"An unexpected error occurred during video joining: {e}"
         print(error_msg)
         return False, error_msg
-    finally:
-        # Cleanup temporary directory
-        if temp_dir and os.path.exists(temp_dir):
-            for f in os.listdir(temp_dir):
-                os.remove(os.path.join(temp_dir, f))
-            os.rmdir(temp_dir)

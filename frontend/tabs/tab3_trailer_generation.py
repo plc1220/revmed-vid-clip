@@ -53,9 +53,6 @@ def render_tab3():
         except requests.exceptions.RequestException as e:
             st.error(f"Error listing metadata files from GCS: {e}")
             gcs_metadata_files = []
-        except Exception as e:
-            st.warning(f"No metadata (.json) files found in 'gs://{gcs_bucket_name}/{metadata_gcs_prefix}'. Please generate metadata in Step 2. Details: {e}")
-            gcs_metadata_files = []
 
     if not gcs_metadata_files:
         st.warning(f"No metadata (.json) files found in 'gs://{gcs_bucket_name}/{metadata_gcs_prefix}'. Please generate metadata in Step 2.")
@@ -90,7 +87,7 @@ def render_tab3():
                     api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
                     payload = {
                         "gcs_bucket": gcs_bucket_name,
-                        "blob_names": [uri.split(f"gs://{gcs_bucket_name}/")[1] for uri in selected_metadata_to_delete]
+                        "blob_names": selected_metadata_to_delete
                     }
                     response = requests.post(api_url, json=payload)
                     response.raise_for_status()
