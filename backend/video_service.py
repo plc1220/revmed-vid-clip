@@ -15,10 +15,19 @@ def get_video_duration(video_path: str) -> Tuple[float, str]:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", video_path,
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                video_path,
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
         )
         duration_seconds = float(result.stdout.strip())
         if duration_seconds < 0:
@@ -41,6 +50,7 @@ def get_video_duration(video_path: str) -> Tuple[float, str]:
         print(error_msg)
         return 0.0, error_msg
 
+
 def split_video(video_path: str, segment_duration_seconds: int, output_dir: str) -> Tuple[List[str], str]:
     """
     Splits a video into segments of a specified duration.
@@ -50,7 +60,7 @@ def split_video(video_path: str, segment_duration_seconds: int, output_dir: str)
         return [], f"Video file not found: {video_path}"
 
     os.makedirs(output_dir, exist_ok=True)
-    
+
     total_duration, err = get_video_duration(video_path)
     if err:
         return [], f"Could not get video duration: {err}"
@@ -72,13 +82,15 @@ def split_video(video_path: str, segment_duration_seconds: int, output_dir: str)
         segment_file_name = f"{base_name}_part_{i+1:03d}{ext}"
         output_path = os.path.join(output_dir, segment_file_name)
 
-        print(f"  [Segment {i+1}/{num_segments}] Start: {start_time}s, Duration: {current_segment_duration:.2f}s, Output: {output_path}", flush=True)
+        print(
+            f"  [Segment {i+1}/{num_segments}] Start: {start_time}s, Duration: {current_segment_duration:.2f}s, Output: {output_path}",
+            flush=True,
+        )
         try:
             print(f"    > Attempting to split with codec 'copy'...", flush=True)
             (
-                ffmpeg
-                .input(video_path, ss=start_time, t=current_segment_duration)
-                .output(output_path, c='copy', avoid_negative_ts=1)
+                ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
+                .output(output_path, c="copy", avoid_negative_ts=1)
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
             )
@@ -91,9 +103,8 @@ def split_video(video_path: str, segment_duration_seconds: int, output_dir: str)
             try:
                 print(f"    > Attempting to split with re-encoding (libx264/aac)...", flush=True)
                 (
-                    ffmpeg
-                    .input(video_path, ss=start_time, t=current_segment_duration)
-                    .output(output_path, vcodec='libx264', acodec='aac', strict='experimental', avoid_negative_ts=1)
+                    ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
+                    .output(output_path, vcodec="libx264", acodec="aac", strict="experimental", avoid_negative_ts=1)
                     .overwrite_output()
                     .run(capture_stdout=True, capture_stderr=True)
                 )
@@ -103,12 +114,14 @@ def split_video(video_path: str, segment_duration_seconds: int, output_dir: str)
                 error_msg = f"Error splitting segment {i+1} (re-encode): {e2.stderr.decode('utf8')}"
                 print(f"    > FATAL: Re-encoding also failed.", flush=True)
                 print(error_msg, flush=True)
-                return saved_segment_paths, error_msg # Return partial success and the error
-    
+                return saved_segment_paths, error_msg  # Return partial success and the error
+
     return saved_segment_paths, ""
 
 
-def create_clip(source_video_path: str, output_clip_path: str, start_seconds: float, end_seconds: float) -> Tuple[bool, str]:
+def create_clip(
+    source_video_path: str, output_clip_path: str, start_seconds: float, end_seconds: float
+) -> Tuple[bool, str]:
     """
     Creates a single clip from a source video file.
     Returns a tuple of (success_boolean, error_message_string).
@@ -122,9 +135,16 @@ def create_clip(source_video_path: str, output_clip_path: str, start_seconds: fl
         os.makedirs(output_dir, exist_ok=True)
 
         (
-            ffmpeg
-            .input(source_video_path, ss=start_seconds, t=duration)
-            .output(output_clip_path, vcodec='libx264', acodec='aac', strict='experimental', preset='medium', crf=23, movflags='+faststart')
+            ffmpeg.input(source_video_path, ss=start_seconds, t=duration)
+            .output(
+                output_clip_path,
+                vcodec="libx264",
+                acodec="aac",
+                strict="experimental",
+                preset="medium",
+                crf=23,
+                movflags="+faststart",
+            )
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True)
         )
@@ -148,7 +168,7 @@ def join_videos(clip_paths: List[str], output_path: str) -> Tuple[bool, str]:
         return False, "No clip paths provided for joining."
 
     # Create a temporary file list for ffmpeg concatenation
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as tmp_list_file:
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tmp_list_file:
         for path in clip_paths:
             # FFmpeg requires special handling of characters in file paths
             # FFmpeg requires absolute paths to correctly locate the files.
@@ -162,9 +182,8 @@ def join_videos(clip_paths: List[str], output_path: str) -> Tuple[bool, str]:
         os.makedirs(output_dir, exist_ok=True)
 
         (
-            ffmpeg
-            .input(concat_list_filename, format='concat', safe=0)
-            .output(output_path, c='copy', vsync='vfr')
+            ffmpeg.input(concat_list_filename, format="concat", safe=0)
+            .output(output_path, c="copy", vsync="vfr")
             .run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
         )
         return True, ""

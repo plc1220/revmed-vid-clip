@@ -1,13 +1,13 @@
-version: '3.8'
 services:
   backend:
     build: ./backend
     ports:
-      - "8000:8080"
+      - "8080:8080"
     env_file:
       - ./backend/.env
     volumes:
-      - ./gcs_credentials.json:/app/gcs_credentials.json
+      - ./backend:/app
+      - ./backend/video-clipping-sa.json:/app/credentials.json
     networks:
       - revmed-network
 
@@ -15,8 +15,10 @@ services:
     build: ./frontend
     ports:
       - "8501:8501"
-    environment:
-      - API_BASE_URL=http://backend:8080
+    env_file:
+      - ./frontend/.env
+    volumes:
+      - ./frontend:/app
     depends_on:
       - backend
     networks:
