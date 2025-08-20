@@ -15,3 +15,72 @@ class TrailerClipMetadata(BaseModel):
     trailer_potential_category: str = Field(description="How could this clip be used? (Choose one or two from list, comma-separated) Options: Hook/Opening, Character Introduction, Inciting Incident, Conflict Build-up, Rising Action, Tension/Suspense Peak, Emotional Beat, Action Sequence Highlight, Twist/Reveal Tease, Climax Tease, Resolution Glimpse, Cliffhanger/Question, Thematic Montage Element")
     pacing_suggestion_for_clip: str = Field(description="How should this clip feel in a trailer sequence? (Choose one from list) Options: Rapid Cut, Medium Pace, Slow Burn/Held Shot, Builds Intensity, Sudden Impact")
     music_sound_cue_idea: Optional[str] = Field(default=None, description="Optional. Sound to amplify the moment. (Max 10 words)")
+
+class UploadURLRequest(BaseModel):
+    file_name: str
+    content_type: str
+    gcs_bucket: str
+    workspace: str
+
+class UploadURLResponse(BaseModel):
+    upload_url: str
+    gcs_blob_name: str
+
+class FaceClipGenerationRequest(BaseModel):
+    workspace: str
+    gcs_bucket: str
+    gcs_video_uri: str
+    gcs_cast_photo_uris: list[str]
+    output_gcs_prefix: str
+
+class SplitRequest(BaseModel):
+    workspace: str
+    gcs_bucket: str
+    gcs_blob_name: str
+    segment_duration: int  # in seconds
+
+
+class MetadataRequest(BaseModel):
+    workspace: str
+    gcs_bucket: str
+    gcs_video_uris: list[str]
+    prompt_template: str
+    ai_model_name: str
+    gcs_output_prefix: str
+
+
+class ClipGenerationRequest(BaseModel):
+    workspace: str
+    gcs_bucket: str
+    metadata_blob_names: list[str]  # GCS paths to the metadata files
+    output_gcs_prefix: str
+
+
+class JoinRequest(BaseModel):
+    workspace: str
+    gcs_bucket: str
+    clip_blob_names: list[str]
+    output_gcs_prefix: str
+
+
+class GCSDeleteRequest(BaseModel):
+    gcs_bucket: str
+    blob_name: str
+
+
+class GCSBatchDeleteRequest(BaseModel):
+    gcs_bucket: str
+    blob_names: List[str]
+
+
+class UploadResponse(BaseModel):
+    gcs_bucket: str
+    gcs_blob_name: str
+    workspace: str
+
+class SignedURLRequest(BaseModel):
+    bucket_name: str
+    blob_name: str
+
+class SignedURLResponse(BaseModel):
+    signed_url: str

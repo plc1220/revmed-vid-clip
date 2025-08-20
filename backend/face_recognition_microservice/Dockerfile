@@ -1,5 +1,5 @@
 # Use a compatible Python version
-FROM python:3.9-slim
+FROM python:3.9
 
 # Set the working directory
 WORKDIR /app
@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies

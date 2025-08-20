@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import requests
+from utils import poll_multiple_job_statuses
 
 def render_tab4():
     st.header("Step 4: Refine Clips by Cast (Face Recognition)")
@@ -116,12 +117,11 @@ def render_tab4():
         
         for uploaded_file in uploaded_cast_photos:
             try:
-                upload_url = f"{st.session_state.API_BASE_URL}/upload-video/"
-                files = {'file': (uploaded_file.name, uploaded_file, uploaded_file.type)}
+                upload_url = f"{st.session_state.API_BASE_URL}/upload-cast-photo/"
+                files = {'photo_file': (uploaded_file.name, uploaded_file, uploaded_file.type)}
                 params = {
                     "gcs_bucket": gcs_bucket_name,
-                    "workspace": workspace,
-                    "gcs_prefix": temp_photo_prefix
+                    "workspace": workspace
                 }
                 
                 response = requests.post(upload_url, files=files, params=params)
@@ -168,41 +168,4 @@ def render_tab4():
 
     # --- Job Status Polling ---
     if "refine_jobs" in st.session_state and st.session_state.refine_jobs:
-        st.markdown("---")
-        st.subheader("Refinement Job Status")
-        
-        # Create a copy of the list to iterate over, so we can modify the original
-        jobs_to_poll = list(st.session_state.refine_jobs)
-        
-        for job in jobs_to_poll:
-            if job['status'] in ["pending", "in_progress"]:
-                try:
-                    status_url = f"{st.session_state.API_BASE_URL}/jobs/{job['job_id']}"
-                    response = requests.get(status_url)
-                    response.raise_for_status()
-                    
-                    job_data = response.json()
-                    job['status'] = job_data.get("status")
-                    details = job_data.get("details", "No details.")
-                    
-                    if job['status'] == "completed":
-                        st.success(f"✅ **{job['clip']}**: {details}")
-                    elif job['status'] == "failed":
-                        st.error(f"❌ **{job['clip']}**: {details}")
-                    else: # in_progress
-                        st.info(f"⏳ **{job['clip']}**: {details}")
-
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Could not get status for job {job['job_id']} ({job['clip']}). Error: {e}")
-                    job['status'] = "error" # Stop polling for this job
-
-        # Filter out completed/failed jobs from the session state list
-        st.session_state.refine_jobs = [j for j in st.session_state.refine_jobs if j['status'] in ["pending", "in_progress"]]
-
-        # If there are still jobs running, schedule a rerun
-        if st.session_state.refine_jobs:
-            import time
-            time.sleep(5)
-            st.rerun()
-        else:
-            st.info("All refinement jobs have finished.")
+        poll_multiple_job_statuses(st.session_state.refine_jobs)

@@ -4,6 +4,8 @@ import time
 import requests
 import json
 import pandas as pd
+from utils import get_gcs_files
+from utils import poll_job_status
 
 # Define the base URL for the backend API
 
@@ -37,8 +39,8 @@ Based on the video content and the prioritization criteria, identify the best mo
 def load_metadata_content_tab2(gcs_bucket_name, gcs_blob_name):
     """Downloads and parses a metadata JSON file from GCS, with caching."""
     try:
-        api_url = f"{st.session_state.API_BASE_URL}/gcs/download"
-        params = {"gcs_bucket": gcs_bucket_name, "blob_name": gcs_blob_name}
+        api_url = f"{st.session_state.API_BASE_URL}/gcs/download/{gcs_blob_name}"
+        params = {"gcs_bucket": gcs_bucket_name}
         response = requests.get(api_url, params=params)
         response.raise_for_status()
         return response.json()
@@ -46,8 +48,6 @@ def load_metadata_content_tab2(gcs_bucket_name, gcs_blob_name):
         raise Exception(f"Failed to download {gcs_blob_name}. Error: {e}")
 
 def render_tab2(
-    gemini_ready: bool,
-    gemini_api_key_global: str,
     ai_model_name_global: str,
     allowed_video_extensions_global: list
 ):
@@ -81,16 +81,8 @@ def render_tab2(
     if not gcs_bucket_name:
         st.error("GCS Bucket name for videos not provided.")
     else:
-        try:
-            api_url = f"{st.session_state.API_BASE_URL}/gcs/list"
-            params = {"gcs_bucket": gcs_bucket_name, "prefix": segments_prefix}
-            response = requests.get(api_url, params=params)
-            response.raise_for_status()
-            blob_names = response.json().get("files", [])
-            gcs_video_uris = [f"gs://{gcs_bucket_name}/{name}" for name in blob_names]
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error listing segment files from GCS: {e}")
-            gcs_video_uris = []
+        blob_names = get_gcs_files(gcs_bucket_name, segments_prefix)
+        gcs_video_uris = [f"gs://{gcs_bucket_name}/{name}" for name in blob_names]
 
         if not gcs_video_uris:
             st.warning(f"No video segment files found in 'gs://{gcs_bucket_name}/{segments_prefix}'. Please split a video in Step 1.")
@@ -126,26 +118,22 @@ def render_tab2(
                 else:
                     try:
                         api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
+                        # Strip the "gs://<bucket_name>/" prefix to get the blob names
+                        blob_names_to_delete = [uri.replace(f"gs://{gcs_bucket_name}/", "") for uri in selected_videos_to_delete]
+                        
                         payload = {
                             "gcs_bucket": gcs_bucket_name,
-                            "blob_names": selected_videos_to_delete
+                            "blob_names": blob_names_to_delete
                         }
                         response = requests.post(api_url, json=payload)
-                        response.raise_for_status()
+                        response.raise_for_status() # Will raise an exception for 4xx/5xx errors
                         
-                        deleted_files = response.json().get("deleted_files", [])
-                        failed_files = response.json().get("failed_files", {})
-
-                        if deleted_files:
-                            st.success(f"Successfully deleted {len(deleted_files)} video(s).")
-                            # Unselect deleted files
-                            for uri in deleted_files:
-                                if uri in st.session_state.video_selection:
-                                    st.session_state.video_selection[uri] = False
+                        st.success(f"Successfully deleted {len(blob_names_to_delete)} video(s).")
                         
-                        if failed_files:
-                            for uri, error in failed_files.items():
-                                st.error(f"Failed to delete {os.path.basename(uri)}: {error}")
+                        # Unselect the deleted files from the UI
+                        for uri in selected_videos_to_delete:
+                            if uri in st.session_state.video_selection:
+                                st.session_state.video_selection[uri] = False
                         
                         st.rerun()
 
@@ -218,38 +206,9 @@ def render_tab2(
     if st.session_state.get("metadata_job_id"):
         st.markdown("---")
         st.subheader("Processing Status")
-        
-        job_id = st.session_state.metadata_job_id
-        status_placeholder = st.empty()
-        
-        while st.session_state.get("metadata_job_status") in ["pending", "in_progress", "starting"]:
-            try:
-                status_url = f"{st.session_state.API_BASE_URL}/jobs/{job_id}"
-                response = requests.get(status_url)
-                response.raise_for_status()
-                
-                job_data = response.json()
-                st.session_state.metadata_job_status = job_data.get("status")
-                st.session_state.metadata_job_details = job_data.get("details")
-
-                if st.session_state.metadata_job_status == "completed":
-                    status_placeholder.success(f"✅ **Job Complete:** {job_data.get('details')}")
-                    st.session_state.generated_metadata_files = job_data.get("generated_files", [])
-                    st.session_state.viewed_metadata_content = {} # Clear previously viewed content
-                    st.session_state.metadata_job_id = None # Clear job
-                    st.rerun() # Rerun to display results immediately
-                elif st.session_state.metadata_job_status == "failed":
-                    status_placeholder.error(f"❌ **Job Failed:** {st.session_state.metadata_job_details}")
-                    st.session_state.metadata_job_id = None # Clear job
-                    break
-                else:
-                    status_placeholder.info(f"⏳ **In Progress:** {st.session_state.metadata_job_details}")
-
-            except requests.exceptions.RequestException as e:
-                status_placeholder.error(f"Could not get job status. Connection error: {e}")
-                break
-            
-            time.sleep(5)
+        poll_job_status(st.session_state.metadata_job_id)
+        st.session_state.metadata_job_id = None # Clear job
+        st.rerun()
 
     if st.session_state.get("generated_metadata_files"):
         st.markdown("---")

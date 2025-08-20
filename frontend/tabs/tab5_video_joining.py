@@ -3,6 +3,7 @@ import os
 import requests
 import time
 import datetime
+from utils import poll_job_status
 
 # Define the base URL for the backend API
 
@@ -197,34 +198,5 @@ def render_tab5():
     if st.session_state.get("join_job_id"):
         st.markdown("---")
         st.subheader("Processing Status")
-        
-        job_id = st.session_state.join_job_id
-        status_placeholder = st.empty()
-        
-        while st.session_state.get("join_job_status") in ["pending", "in_progress", "starting"]:
-            try:
-                status_url = f"{st.session_state.API_BASE_URL}/jobs/{job_id}"
-                response = requests.get(status_url)
-                response.raise_for_status()
-                
-                job_data = response.json()
-                st.session_state.join_job_status = job_data.get("status")
-                st.session_state.join_job_details = job_data.get("details")
-
-                if st.session_state.join_job_status == "completed":
-                    status_placeholder.success(f"✅ **Job Complete:** {st.session_state.join_job_details}")
-                    st.session_state.join_job_id = None
-                    # In a real app, you might add a link to the final video here
-                    break
-                elif st.session_state.join_job_status == "failed":
-                    status_placeholder.error(f"❌ **Job Failed:** {st.session_state.join_job_details}")
-                    st.session_state.join_job_id = None
-                    break
-                else:
-                    status_placeholder.info(f"⏳ **In Progress:** {st.session_state.join_job_details}")
-
-            except requests.exceptions.RequestException as e:
-                status_placeholder.error(f"Could not get job status. Connection error: {e}")
-                break
-            
-            time.sleep(5)
+        poll_job_status(st.session_state.join_job_id)
+        st.session_state.join_job_id = None

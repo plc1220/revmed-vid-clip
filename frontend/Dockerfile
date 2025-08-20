@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=True
 
@@ -19,4 +19,4 @@ COPY . .
 EXPOSE 8501
 
 # Run app.py when the container launches
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["/bin/sh", "-c", "streamlit run app.py --server.port=${PORT} --server.address=0.0.0.0"]

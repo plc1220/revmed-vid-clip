@@ -4,19 +4,13 @@
 set -e
 
 # --- Configuration ---
-GCP_PROJECT_ID="your-gcp-project-id"
-IMAGE_NAME="rev-med-backend"
-GCR_HOSTNAME="gcr.io"
-IMAGE_TAG="$GCR_HOSTNAME/$GCP_PROJECT_ID/$IMAGE_NAME:latest"
+GCP_PROJECT_ID="my-rd-coe-demo-data"
 
-# --- Build and Push ---
-echo "Building the Docker image..."
-docker build -t $IMAGE_NAME .
+# --- Build and Deploy via Cloud Build ---
+echo "Changing to backend directory..."
+cd backend
 
-echo "Tagging the image for GCR..."
-docker tag $IMAGE_NAME $IMAGE_TAG
+echo "Submitting build to Google Cloud Build..."
+gcloud builds submit --config cloudbuild.yaml --project=$GCP_PROJECT_ID
 
-echo "Pushing the image to GCR..."
-docker push $IMAGE_TAG
-
-echo "Deployment image pushed to: $IMAGE_TAG"
+echo "Backend deployment submitted."

@@ -4,6 +4,7 @@ from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 from typing import Tuple, List
 from schemas import TrailerClipMetadata
+import logging
 
 # --- Gemini Client Initialization ---
 # Switch to Vertex AI client for GCS URI support
@@ -14,10 +15,10 @@ try:
         raise ValueError("GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION environment variables must be set to use the Vertex AI client.")
     
     client = genai.Client(vertexai=True, project=project_id, location=location)
-    print("Successfully initialized Vertex AI client.")
+    logging.info("Successfully initialized Vertex AI client.")
 except Exception as e:
     import traceback
-    print(f"Failed to initialize Genai Client: {e}")
+    logging.error(f"Failed to initialize Genai Client: {e}")
     traceback.print_exc()
     client = None
 
@@ -81,7 +82,7 @@ async def generate_content_async(prompt: str, gcs_video_uri: str, model_name: st
 
     except Exception as e:
         error_msg = f"Gemini API error: {type(e).__name__} - {e}"
-        print(error_msg)
+        logging.error(error_msg)
         # Re-raise the exception to allow tenacity to handle the retry
         raise
 
@@ -108,5 +109,5 @@ def generate_content_sync(prompt: str, model_name: str) -> Tuple[str, str]:
 
     except Exception as e:
         error_msg = f"Gemini API error: {type(e).__name__} - {e}"
-        print(error_msg)
+        logging.error(error_msg)
         return "", error_msg
