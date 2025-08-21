@@ -11,7 +11,7 @@ def get_config():
         "GCS_PROCESSED_VIDEO_PREFIX": "processed/",
         "GCS_METADATA_PREFIX": "metadata/",
         "GCS_OUTPUT_CLIPS_PREFIX": "clips/",
-        "API_BASE_URL": os.getenv("API_BASE_URL", "http://backend:8080"),
+        "API_BASE_URL": os.getenv("API_BASE_URL", "https://backend-dvgm2r6s4q-as.a.run.app"),
     }
 
 def load_config():

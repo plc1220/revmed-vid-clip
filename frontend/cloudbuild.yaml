@@ -1,22 +1,20 @@
 steps:
-  # Build and push frontend
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/frontend:$BUILD_ID', '.']
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/frontend:$BUILD_ID']
-
-  # Deploy frontend
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        gcloud run deploy revmedia-frontend \
-          --image=asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/frontend:$BUILD_ID \
-          --region=asia-southeast1 \
-          --platform=managed \
-          --allow-unauthenticated \
-          --set-env-vars=API_BASE_URL=$$(gcloud run services describe revmedia-backend --platform managed --region asia-southeast1 --format 'value(status.url)')
-
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/frontend', '.']
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/frontend']
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args:
+  - 'run'
+  - 'deploy'
+  - 'frontend'
+  - '--image'
+  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/frontend'
+  - '--region'
+  - 'asia-southeast1'
+  - '--platform'
+  - 'managed'
+  - '--allow-unauthenticated'
 images:
-  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmedia-vid-clip/frontend:$BUILD_ID'
+- 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/frontend'

@@ -20,8 +20,6 @@ from schemas import (
     GCSDeleteRequest,
     GCSBatchDeleteRequest,
     UploadResponse,
-    SignedURLRequest,
-    SignedURLResponse,
 )
 
 load_dotenv()
@@ -116,17 +114,6 @@ async def list_workspaces(gcs_bucket: str = Query(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/generate-signed-url/", response_model=SignedURLResponse)
-async def api_generate_signed_url(request: SignedURLRequest):
-    """
-    Generate a signed URL for a GCS blob.
-    """
-    signed_url, error = gcs_service.generate_signed_url(request.bucket_name, request.blob_name)
-    if error:
-        raise HTTPException(status_code=500, detail=error)
-    return SignedURLResponse(signed_url=signed_url)
-
-
 @app.get("/gcs/list", tags=["GCS"])
 async def list_gcs_files_endpoint(gcs_bucket: str = Query(None), prefix: str = Query("")):
     """Lists files in a GCS bucket with a given prefix."""
@@ -164,20 +151,52 @@ async def get_job_status(job_id: str):
 @app.post("/generate-upload-url/", response_model=UploadURLResponse)
 async def generate_upload_url(request: UploadURLRequest):
     """
-    Generates a signed URL for uploading a file directly to GCS.
+    Generate a signed URL for direct upload to Google Cloud Storage.
+    
+    Args:
+        request: Contains file_name, content_type, gcs_bucket, and workspace
+        
+    Returns:
+        UploadURLResponse with the signed URL and blob name
     """
+    
     try:
-        # Ensure the workspace is included in the blob name for organization
-        gcs_blob_name = os.path.join(request.workspace, "videos", request.file_name)
-
-        upload_url, gcs_blob_name = gcs_service.generate_signed_upload_url(
-            request.gcs_bucket, gcs_blob_name, request.content_type
+        # Validate file extension (optional - add your allowed extensions)
+        allowed_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm']
+        file_extension = os.path.splitext(request.file_name.lower())[1]
+        
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File type {file_extension} not supported. Allowed: {allowed_extensions}"
+            )
+        
+        # Generate unique blob name to avoid conflicts
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        safe_filename = request.file_name.replace(" ", "_").replace("/", "_")
+        
+        # Create blob path: workspace/uploads/timestamp_uniqueid_filename
+        gcs_blob_name = f"{request.workspace}/uploads/{timestamp}_{unique_id}_{safe_filename}"
+        
+        signed_url, error = gcs_service.generate_signed_url(
+            bucket_name=request.gcs_bucket,
+            blob_name=gcs_blob_name,
+            method="PUT",
+            content_type=request.content_type,
         )
-        return UploadURLResponse(upload_url=upload_url, gcs_blob_name=gcs_blob_name)
+        
+        return UploadURLResponse(
+            upload_url=signed_url,
+            gcs_blob_name=gcs_blob_name
+        )
+        
     except Exception as e:
-        import logging
-        logging.error(f"Error in /generate-upload-url/ endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error generating signed URL: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate upload URL: {str(e)}"
+        )
 
 
 @app.post("/upload-video/", tags=["Video Processing"], response_model=UploadResponse)

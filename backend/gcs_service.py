@@ -180,11 +180,16 @@ def delete_gcs_blobs_batch(bucket_name: str, blob_names: List[str]) -> Tuple[boo
         return False, error_msg
 
 
-def generate_signed_url(bucket_name: str, blob_name: str) -> Tuple[str, str]:
+def generate_signed_url(
+    bucket_name: str, blob_name: str, method: str = "GET", content_type: str = None
+) -> Tuple[str, str]:
     """
-    Generates a signed URL for a GCS blob using the service account.
+    Generates a signed URL for a GCS blob for GET (download) or PUT (upload).
     """
     try:
+        # Use the centralized client which should be initialized with a service account
+        credentials, project_id = google.auth.default()
+        credentials.refresh(google.auth.transport.requests.Request())
         storage_client = get_storage_client()
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
@@ -192,41 +197,20 @@ def generate_signed_url(bucket_name: str, blob_name: str) -> Tuple[str, str]:
         # URL is valid for 1 hour
         expiration_time = datetime.timedelta(hours=1)
 
-        # The client, initialized via get_storage_client, now has the service account key
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=expiration_time,
-            method="GET",
-        )
-        return url, ""
-    except Exception as e:
-        error_msg = f"Error generating signed URL for gs://{bucket_name}/{blob_name}: {e}"
-        logging.error(error_msg)
-        return "", error_msg
-
-
-def generate_upload_signed_url(bucket_name: str, blob_name: str, content_type: str) -> Tuple[str, str]:
-    """
-    Generates a upload signed URL for a GCS blob using the service account.
-    """
-    try:
-        storage_client = get_storage_client()
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-
-        # URL is valid for 1 hour
-        expiration_time = datetime.timedelta(hours=1)
-
+        # Generate the signed URL
+        # The client's credentials (from GOOGLE_APPLICATION_CREDENTIALS) will be used automatically.
         signed_url = blob.generate_signed_url(
             version="v4",
             expiration=expiration_time,
-            method="PUT",
+            method=method,
             content_type=content_type,
+            service_account_email=credentials.service_account_email,
+            access_token=credentials.token,
         )
         return signed_url, ""
     except Exception as e:
-        error_msg = f"Error generating signed URL for gs://{bucket_name}/{blob_name}: {e}"
-        logging.error(error_msg)
+        error_msg = f"Error generating signed URL for gs://{bucket_name}/{blob_name} with method {method}: {e}"
+        logging.error(error_msg, exc_info=True)
         return "", error_msg
 
 

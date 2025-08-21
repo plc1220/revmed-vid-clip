@@ -1,0 +1,20 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service', '.']
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service']
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args:
+  - 'run'
+  - 'deploy'
+  - 'face-recognition-service'
+  - '--image'
+  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service'
+  - '--region'
+  - 'asia-southeast1'
+  - '--platform'
+  - 'managed'
+  - '--allow-unauthenticated'
+images:
+- 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service'

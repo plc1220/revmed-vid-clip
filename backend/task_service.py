@@ -424,7 +424,7 @@ def process_face_clip_generation(job_id: str, request: FaceClipGenerationRequest
 
     try:
         # 1. Call the face recognition microservice
-        fr_service_url = "http://face-recognition-service:8001/process-video/"
+        fr_service_url = os.getenv("FACE_RECOGNITION_SERVICE_URL", "http://face-recognition-service:8001") + "/process-video/"
         payload = {
             "gcs_bucket": request.gcs_bucket,
             "gcs_video_uri": request.gcs_video_uri,
