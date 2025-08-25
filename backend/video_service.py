@@ -1,5 +1,6 @@
 import os
 import math
+import io
 import ffmpeg
 import subprocess
 import shutil
@@ -123,6 +124,68 @@ def split_video(video_path: str, segment_duration_seconds: int, output_dir: str)
                 return saved_segment_paths, error_msg  # Return partial success and the error
 
     return saved_segment_paths, ""
+
+def split_video_stream(video_path: str, segment_duration_seconds: int):
+    """
+    Splits a video from a URL into segments and yields them as in-memory bytes.
+    This is a generator function.
+    """
+    total_duration, err = get_video_duration(video_path)
+    if err:
+        raise RuntimeError(f"Could not get video duration: {err}")
+
+    if total_duration <= 0:
+        logging.warning(f"Video '{os.path.basename(video_path)}' has zero or negative duration. Cannot split.")
+        return
+
+    num_segments = math.ceil(total_duration / segment_duration_seconds)
+    base_name_full = os.path.basename(video_path)
+    base_name_sanitized = base_name_full.split("?")[0]
+    base_name, ext = os.path.splitext(base_name_sanitized)
+
+    for i in range(num_segments):
+        start_time = i * segment_duration_seconds
+        current_segment_duration = min(segment_duration_seconds, total_duration - start_time)
+
+        if current_segment_duration <= 0:
+            continue
+
+        segment_file_name = f"{base_name}_part_{i+1:03d}{ext}"
+        logging.info(
+            f"  [Segment {i+1}/{num_segments}] Start: {start_time}s, Duration: {current_segment_duration:.2f}s"
+        )
+        
+        try:
+            # Process the video segment in memory
+            process = (
+                ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
+                .output('pipe:', format='mp4', movflags='frag_keyframe+empty_moov', c='copy', avoid_negative_ts=1)
+                .run_async(pipe_stdout=True, pipe_stderr=True)
+            )
+            
+            out_bytes, err_bytes = process.communicate()
+
+            if process.returncode != 0:
+                # If copy fails, try re-encoding
+                logging.warning(f"    > Codec 'copy' failed for segment {i+1}. Trying re-encoding. Error: {err_bytes.decode('utf8')}")
+                process = (
+                    ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
+                    .output('pipe:', format='mp4', movflags='frag_keyframe+empty_moov', vcodec="libx264", acodec="aac", strict="experimental", avoid_negative_ts=1)
+                    .run_async(pipe_stdout=True, pipe_stderr=True)
+                )
+                out_bytes, err_bytes = process.communicate()
+
+                if process.returncode != 0:
+                    raise ffmpeg.Error("ffmpeg", out_bytes, err_bytes)
+
+            # Yield the segment filename and the in-memory bytes
+            yield segment_file_name, io.BytesIO(out_bytes)
+
+        except ffmpeg.Error as e:
+            error_msg = f"Error splitting segment {i+1} into stream: {e.stderr.decode('utf8')}"
+            logging.error(error_msg)
+            # We can choose to stop or continue. For now, we stop.
+            raise RuntimeError(error_msg)
 
 
 def create_clip(

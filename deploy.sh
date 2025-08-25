@@ -25,7 +25,7 @@ echo "Deploying backend service..."
 #(cd backend/face_recognition_microservice && gcloud builds submit --config cloudbuild.yaml)
 
 # Frontend service
-echo "Deploying frontend service..."
-(cd frontend && gcloud builds submit --config cloudbuild.yaml)
+#echo "Deploying frontend service..."
+#(cd frontend && gcloud builds submit --config cloudbuild.yaml)
 
 echo "All services deployed successfully!"

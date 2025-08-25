@@ -16,7 +16,7 @@ steps:
   - '--set-env-vars'
   - 'FACE_RECOGNITION_SERVICE_URL=https://face-recognition-service-dvgm2r6s4q-as.a.run.app,GOOGLE_CLOUD_PROJECT=my-rd-coe-demo-data,GOOGLE_CLOUD_LOCATION=asia-southeast1'
   - '--memory'
-  - '8Gi'
+  - '16Gi'
   - '--cpu'
   - '4'
   - '--platform'

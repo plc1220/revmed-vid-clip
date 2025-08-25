@@ -4,6 +4,7 @@ from google.cloud import storage
 from typing import List, Tuple
 import datetime
 import logging
+import multiprocessing
 
 # --- Centralized GCS Client Initialization ---
 _storage_client = None
@@ -121,20 +122,106 @@ def download_gcs_blob(bucket_name: str, source_blob_name: str, destination_file_
         return False, error_msg
 
 
-def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_name: str) -> Tuple[bool, str]:
+# def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_name: str) -> Tuple[bool, str]:
+#     """
+#     Uploads a file to the bucket.
+#     """
+#     try:
+#         storage_client = get_storage_client()
+#         bucket = storage_client.bucket(bucket_name)
+#         blob = bucket.blob(destination_blob_name)
+#         blob.upload_from_filename(source_file_name)
+#         return True, ""
+#     except Exception as e:
+#         error_msg = f"Error uploading {source_file_name} to GCS blob gs://{bucket_name}/{destination_blob_name}: {e}"
+#         print(error_msg)
+#         return False, error_msg
+
+
+def _upload_part(bucket_name: str, blob_name: str, source_file: str, start: int, end: int, part_number: int):
     """
-    Uploads a file to the bucket.
+    Uploads a chunk of the file as a temporary part blob.
+    """
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    part_blob_name = f"{blob_name}.part{part_number}"
+    blob = bucket.blob(part_blob_name)
+
+    with open(source_file, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start)
+        blob.upload_from_string(chunk)
+
+    return part_blob_name
+
+
+def upload_gcs_blob(bucket_name: str, source_file_name: str, destination_blob_name: str, chunk_size: int = 50 * 1024 * 1024) -> Tuple[bool, str]:
+    """
+    Uploads a file to a GCS bucket using concurrent chunked uploads for performance.
+    - Splits file into parts
+    - Uploads them in parallel
+    - Composes them back into a single blob
+    - Cleans up temporary part blobs
+    """
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        file_size = os.path.getsize(source_file_name)
+
+        # Worker count: half CPUs, between 2 and 8
+        num_workers = max(2, min(8, multiprocessing.cpu_count() // 2))
+        pool = multiprocessing.Pool(num_workers)
+
+        # Schedule parallel part uploads
+        tasks = []
+        part_number = 0
+        for start in range(0, file_size, chunk_size):
+            end = min(start + chunk_size, file_size)
+            tasks.append(pool.apply_async(_upload_part, (bucket_name, destination_blob_name, source_file_name, start, end, part_number)))
+            part_number += 1
+
+        pool.close()
+        pool.join()
+
+        # Collect uploaded part blob names
+        part_blob_names = [task.get() for task in tasks]
+        part_blobs = [bucket.blob(name) for name in part_blob_names]
+
+        # Compose parts into final blob
+        final_blob = bucket.blob(destination_blob_name)
+        final_blob.compose(part_blobs)
+
+        # Clean up temporary part blobs
+        for pb in part_blobs:
+            pb.delete()
+
+        return True, ""
+    except Exception as e:
+        error_msg = f"Error uploading {source_file_name} to GCS blob gs://{bucket_name}/{destination_blob_name}: {e}"
+        logging.error(error_msg, exc_info=True)
+        return False, error_msg
+
+
+def upload_gcs_blob_from_stream(bucket_name: str, source_stream, destination_blob_name: str) -> Tuple[bool, str]:
+    """
+    Uploads a file-like object (stream) to a GCS bucket.
     """
     try:
         storage_client = get_storage_client()
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(destination_blob_name)
-        blob.upload_from_filename(source_file_name)
+
+        # Rewind the stream to the beginning before uploading
+        source_stream.seek(0)
+        
+        blob.upload_from_file(source_stream)
+
         return True, ""
     except Exception as e:
-        error_msg = f"Error uploading {source_file_name} to GCS blob gs://{bucket_name}/{destination_blob_name}: {e}"
+        error_msg = f"Error uploading stream to GCS blob gs://{bucket_name}/{destination_blob_name}: {e}"
         logging.error(error_msg)
         return False, error_msg
+
 
 
 def delete_gcs_blob(bucket_name: str, blob_name: str) -> Tuple[bool, str]:

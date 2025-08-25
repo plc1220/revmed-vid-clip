@@ -16,5 +16,11 @@ steps:
   - '--platform'
   - 'managed'
   - '--allow-unauthenticated'
+  - '--cpu'
+  - '4'
+  - '--memory'
+  - '16Gi'
+  - '--set-env-vars'
+  - 'BACKEND_URL=https://backend-dvgm2r6s4q-as.a.run.app'
 images:
 - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service'

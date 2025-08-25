@@ -2,6 +2,7 @@ import os
 import uuid
 import shutil
 import logging
+import subprocess
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import face_recognition
@@ -43,7 +44,7 @@ def upload_to_gcs(local_path: str, gcs_bucket: str, gcs_blob_name: str):
     with open(local_path, 'rb') as f:
         files = {'video_file': (filename, f, 'video/mp4')}
         response = requests.post(
-            "http://backend:8080/upload-video/",
+            f"{os.getenv('BACKEND_URL')}/upload-video/",
             files=files,
             data={"workspace": workspace, "gcs_bucket": gcs_bucket}
         )
@@ -125,8 +126,8 @@ def process_frame_batch(frames_data, known_face_encodings, tolerance):
 def find_scenes_with_any_face(
     video_path: str, 
     known_face_encodings: List[np.ndarray], 
-    frame_skip: int = 5,
-    tolerance: float = 0.6,
+    frame_skip: int = 10,
+    tolerance: float = 0.5,
     batch_size: int = 100
 ) -> List[float]:
     """Analyzes a video to find scenes containing ANY of the known faces (OR logic)."""
@@ -222,12 +223,12 @@ async def process_video(request: FaceRecognitionRequest):
 
     try:
         # Get signed URL for the video
-        signed_url_response = requests.post(
-            "http://backend:8080/generate-signed-url/",
-            json={"bucket_name": request.gcs_bucket, "blob_name": request.gcs_video_uri},
+        signed_url_response = requests.get(
+            f"{os.getenv('BACKEND_URL')}/gcs/signed-url",
+            params={"gcs_bucket": request.gcs_bucket, "blob_name": request.gcs_video_uri},
         )
         signed_url_response.raise_for_status()
-        video_url = signed_url_response.json()["signed_url"]
+        video_url = signed_url_response.json()["url"]
 
         # Download video
         local_video_path = os.path.join(job_temp_dir, os.path.basename(request.gcs_video_uri))
@@ -237,12 +238,12 @@ async def process_video(request: FaceRecognitionRequest):
         local_photo_paths = []
         for photo_uri in request.gcs_cast_photo_uris:
             clean_photo_uri = photo_uri.replace(f"gs://{request.gcs_bucket}/", "")
-            signed_url_response = requests.post(
-                "http://backend:8080/generate-signed-url/",
-                json={"bucket_name": request.gcs_bucket, "blob_name": clean_photo_uri},
+            signed_url_response = requests.get(
+                f"{os.getenv('BACKEND_URL')}/gcs/signed-url",
+                params={"gcs_bucket": request.gcs_bucket, "blob_name": clean_photo_uri},
             )
             signed_url_response.raise_for_status()
-            photo_url = signed_url_response.json()["signed_url"]
+            photo_url = signed_url_response.json()["url"]
             local_photo_path = os.path.join(job_temp_dir, os.path.basename(clean_photo_uri))
             download_file(photo_url, local_photo_path)
             local_photo_paths.append(local_photo_path)
@@ -262,13 +263,42 @@ async def process_video(request: FaceRecognitionRequest):
         
         # After processing, upload the refined clips
         workspace = request.gcs_video_uri.split('/')[0]
+        video_basename = os.path.splitext(os.path.basename(request.gcs_video_uri))[0]
+        CLIP_FILENAME_TEMPLATE = "{basename}_refined_clip_{index}.mp4"
         for i, scene in enumerate(scene_objects):
-            clip_filename = f"refined_clip_{i+1}.mp4"
+            clip_filename = CLIP_FILENAME_TEMPLATE.format(basename=video_basename, index=i+1)
             local_clip_path = os.path.join(job_temp_dir, clip_filename)
             
             # Use ffmpeg to cut the clip, re-encoding to avoid issues
-            os.system(f"ffmpeg -i {local_video_path} -ss {scene.start_time} -to {scene.end_time} -y {local_clip_path}")
-            
+            try:
+                # Use subprocess.run to wait for ffmpeg to complete
+                ffmpeg_command = [
+                    "ffmpeg",
+                    "-i", local_video_path,
+                    "-ss", str(scene.start_time),
+                    "-to", str(scene.end_time),
+                    "-y",
+                    local_clip_path
+                ]
+                # Redirect stdout/stderr to DEVNULL to avoid consuming memory
+                result = subprocess.run(
+                    ffmpeg_command,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE
+                )
+                logger.info(f"Successfully created clip: {local_clip_path}")
+            except subprocess.CalledProcessError as e:
+                # Decode stderr from bytes to string for logging
+                error_message = e.stderr.decode('utf-8') if e.stderr else 'No error output'
+                logger.error(f"ffmpeg failed for {local_clip_path}: {error_message}")
+                # Decide if you want to skip this clip or raise an exception
+                continue  # Skip to the next scene if a clip fails
+
+            if not os.path.exists(local_clip_path):
+                logger.error(f"Clip file was not created: {local_clip_path}")
+                continue
+
             gcs_blob_name = f"{workspace}/refined_clips/{clip_filename}"
             upload_to_gcs(local_clip_path, request.gcs_bucket, gcs_blob_name)
 

@@ -1,13 +1,13 @@
 import json
 import os
+import math
+import logging
+from google.cloud.video.transcoder_v1.services.transcoder_service import TranscoderServiceClient
+from google.cloud.video.transcoder_v1.types import Job, JobConfig, Input, EditAtom, ElementaryStream, MuxStream, Output
 import shutil
-import uuid
 
-from datetime import datetime, timezone
+
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Form, UploadFile
-from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
 import logging
 
 # Import services
@@ -18,15 +18,11 @@ import requests
 
 # Import schemas
 from schemas import (
-    UploadURLRequest,
-    UploadURLResponse,
     FaceClipGenerationRequest,
     SplitRequest,
     MetadataRequest,
     ClipGenerationRequest,
     JoinRequest,
-    GCSDeleteRequest,
-    UploadResponse,
 )
 
 load_dotenv()
@@ -68,88 +64,188 @@ TEMP_STORAGE_PATH = "./api_temp_storage"
 os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
 
 def process_splitting(job_id: str, request: SplitRequest):
-    """The actual logic for the video splitting background task."""
+    """
+    Updated video splitting process using Google Cloud Video Transcoder API.
+    This creates separate transcoder jobs for each segment due to API limitations.
+    """
+    from google.cloud.video import transcoder_v1
+    
     _write_job(job_id, {"status": "in_progress", "details": "Starting video split process."})
-    logging.info(f"Job {job_id}: Starting video split process.")
-
-    # Create a unique temporary directory for this job
-    job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
-    os.makedirs(job_temp_dir, exist_ok=True)
+    logging.info(f"Job {job_id}: Starting video split process using Transcoder API.")
 
     try:
-        # 1. Generate a signed URL for the video in GCS
-        _write_job(
-            job_id,
-            {"status": "in_progress", "details": f"Generating signed URL for gs://{request.gcs_bucket}/{request.gcs_blob_name}..."},
-        )
-        logging.info(f"Job {job_id}: Generating signed URL for gs://{request.gcs_bucket}/{request.gcs_blob_name}...")
-        
-        signed_url, error = gcs_service.generate_signed_url(request.gcs_bucket, request.gcs_blob_name)
-        if error:
-            raise Exception(f"Failed to generate signed URL: {error}")
+        # Initialize Transcoder client
+        transcoder_client = TranscoderServiceClient()
+        project_id = os.environ["GOOGLE_CLOUD_PROJECT"]
+        location = os.environ["GOOGLE_CLOUD_LOCATION"]  # Should match your GCS bucket region
+        parent = f"projects/{project_id}/locations/{location}"
 
-        # 2. Split the video directly from the URL
-        _write_job(job_id, {"status": "in_progress", "details": "Splitting video into segments from URL..."})
-        logging.info(f"Job {job_id}: Splitting video into segments from URL...")
-        split_output_dir = os.path.join(job_temp_dir, "split_output")
-        os.makedirs(split_output_dir, exist_ok=True)
-
-        # Pass the signed URL directly to the video service
-        segment_paths, error = video_service.split_video(signed_url, request.segment_duration, split_output_dir)
-        if error:
-            # Even if there's an error, some segments might have been created. We'll upload them.
-            _write_job(
-                job_id,
-                {
-                    "status": "in_progress",
-                    "details": f"Splitting partially failed: {error}. Uploading successful segments.",
-                },
-            )
-
-        if not segment_paths:
-            raise Exception("Video splitting produced no segments.")
-
-        # 3. Upload segments back to GCS
-        _write_job(job_id, {"status": "in_progress", "details": f"Uploading {len(segment_paths)} segments to GCS..."})
-        logging.info(f"Job {job_id}: Uploading {len(segment_paths)} segments to GCS...")
-        # Create a clean output prefix in a dedicated 'segments' folder
+        # 1. Prepare GCS URIs
+        input_uri = f"gs://{request.gcs_bucket}/{request.gcs_blob_name}"
         base_filename = os.path.basename(request.gcs_blob_name)
-        output_prefix = os.path.join(request.workspace, "segments", os.path.splitext(base_filename)[0] + "_segments/")
+        base_name, ext = os.path.splitext(base_filename)
+        
+        _write_job(job_id, {"status": "in_progress", "details": f"Processing {input_uri}..."})
+        logging.info(f"Job {job_id}: Processing {input_uri}")
 
-        for i, segment_path in enumerate(segment_paths):
-            segment_blob_name = os.path.join(output_prefix, os.path.basename(segment_path))
-            _write_job(
-                job_id,
-                {
-                    "status": "in_progress",
-                    "details": f"Uploading segment {i+1}/{len(segment_paths)}: {segment_blob_name}",
-                },
+        # 2. Get video duration using your existing function
+        signed_url, url_error = gcs_service.generate_signed_url(request.gcs_bucket, request.gcs_blob_name)
+        if url_error:
+            raise Exception(f"Failed to generate signed URL for duration check: {url_error}")
+        
+        total_duration, duration_error = video_service.get_video_duration(signed_url)
+        if duration_error or total_duration <= 0:
+            raise Exception(f"Failed to get video duration: {duration_error}")
+
+        logging.info(f"Job {job_id}: Video duration: {total_duration}s")
+
+        # 3. Calculate segments
+        num_segments = math.ceil(total_duration / request.segment_duration)
+        _write_job(job_id, {"status": "in_progress", "details": f"Will create {num_segments} segments..."})
+        
+        # 4. Create separate transcoder jobs for each segment
+        output_prefix = os.path.join(request.workspace, "segments")
+        
+        # Create elementary streams (reused for each job)
+        elementary_streams = [
+            transcoder_v1.types.ElementaryStream(
+                key="video-stream0",
+                video_stream=transcoder_v1.types.VideoStream(
+                    h264=transcoder_v1.types.VideoStream.H264CodecSettings(
+                        bitrate_bps=2000000,
+                        frame_rate=30,
+                    ),
+                ),
+            ),
+            transcoder_v1.types.ElementaryStream(
+                key="audio-stream0",
+                audio_stream=transcoder_v1.types.AudioStream(
+                    codec="aac",
+                    bitrate_bps=128000,
+                ),
+            ),
+        ]
+        
+        transcoder_job_names = []
+        
+        for i in range(num_segments):
+            start = i * request.segment_duration
+            end = min(start + request.segment_duration, total_duration)
+            
+            # Create edit atom for this segment only
+            edit_atom = transcoder_v1.types.EditAtom(
+                key="atom0",  # Single atom per job
+                inputs=["input0"],
+                start_time_offset=f"{start:.3f}s",
+                end_time_offset=f"{end:.3f}s",
             )
-            logging.info(f"Job {job_id}: Uploading segment {i+1}/{len(segment_paths)}: {segment_blob_name}")
-            success, upload_error = gcs_service.upload_gcs_blob(request.gcs_bucket, segment_path, segment_blob_name)
-            if not success:
-                # Log error but continue trying to upload others
-                logging.warning(f"Warning: Failed to upload {segment_path}: {upload_error}")
+            
+            # Create single mux stream for this segment
+            segment_filename = f"{base_name}_part_{i+1:03d}.mp4"
+            mux_stream = transcoder_v1.types.MuxStream(
+                key="segment-output",
+                file_name=segment_filename,
+                container="mp4",
+                elementary_streams=["video-stream0", "audio-stream0"],
+            )
 
-        _write_job(
-            job_id,
-            {
-                "status": "completed",
-                "details": f"Successfully split video into {len(segment_paths)} segments in gs://{request.gcs_bucket}/{output_prefix}",
-            },
-        )
-        logging.info(
-            f"Job {job_id}: Successfully split video into {len(segment_paths)} segments in gs://{request.gcs_bucket}/{output_prefix}"
-        )
+            # Create job config for this segment
+            job_config = transcoder_v1.types.JobConfig(
+                inputs=[transcoder_v1.types.Input(key="input0", uri=input_uri)],
+                edit_list=[edit_atom],  # Single edit atom per job
+                elementary_streams=elementary_streams,
+                mux_streams=[mux_stream],  # Single mux stream per job
+                output=transcoder_v1.types.Output(uri=f"gs://{request.gcs_bucket}/{output_prefix}/"),
+            )
+            
+            # Submit individual transcoder job
+            transcoder_job = transcoder_v1.types.Job(config=job_config)
+            
+            _write_job(job_id, {"status": "in_progress", "details": f"Submitting job for segment {i+1}/{num_segments}..."})
+            logging.info(f"Job {job_id}: Submitting transcoder job for segment {i+1}")
+            
+            response = transcoder_client.create_job(parent=parent, job=transcoder_job)
+            transcoder_job_names.append(response.name)
+            
+            logging.info(f"Job {job_id}: Segment {i+1} job {response.name} submitted")
+
+        _write_job(job_id, {
+            "status": "submitted",
+            "details": f"{num_segments} transcoder jobs submitted. Processing segments...",
+            "transcoder_job_names": transcoder_job_names,
+            "num_segments": num_segments
+        })
+            # 7. Poll all transcoder jobs until completion
+        import time
+        max_wait_time = 600  # 10 minutes
+        poll_interval = 30    # 30 seconds
+        elapsed_time = 0
+        completed_jobs = set()
+        
+        while elapsed_time < max_wait_time and len(completed_jobs) < len(transcoder_job_names):
+            try:
+                for job_name in transcoder_job_names:
+                    if job_name in completed_jobs:
+                        continue
+                        
+                    job_status = transcoder_client.get_job(name=job_name)
+                    state = job_status.state.name
+                    
+                    if state == "SUCCEEDED":
+                        completed_jobs.add(job_name)
+                        logging.info(f"Job {job_id}: Segment job {job_name} completed successfully")
+                        
+                    elif state == "FAILED":
+                        error_msg = job_status.error.message if job_status.error else "Unknown transcoder error"
+                        raise Exception(f"Transcoder job {job_name} failed: {error_msg}")
+                
+                if len(completed_jobs) == len(transcoder_job_names):
+                    final_details = f"Successfully split video into {num_segments} segments in gs://{request.gcs_bucket}/{output_prefix}/"
+                    _write_job(job_id, {"status": "completed", "details": final_details})
+                    logging.info(f"Job {job_id}: {final_details}")
+                    return
+                else:
+                    progress_msg = f"Processing segments... ({len(completed_jobs)}/{len(transcoder_job_names)} completed, {elapsed_time}s elapsed)"
+                    _write_job(job_id, {"status": "in_progress", "details": progress_msg})
+                    logging.info(f"Job {job_id}: {progress_msg}")
+                
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+                
+            except Exception as poll_error:
+                logging.error(f"Job {job_id}: Error polling transcoder status: {str(poll_error)}")
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+        
+        # Timeout reached
+        raise Exception(f"Transcoder jobs timed out after {max_wait_time} seconds")
+        
 
     except Exception as e:
-        _write_job(job_id, {"status": "failed", "details": str(e)})
-        logging.error(f"Job {job_id}: Failed - {str(e)}")
-    finally:
-        # Clean up the temporary directory for this job
-        if os.path.exists(job_temp_dir):
-            shutil.rmtree(job_temp_dir)
+        error_msg = f"Video splitting failed: {str(e)}"
+        _write_job(job_id, {"status": "failed", "details": error_msg})
+        logging.error(f"Job {job_id}: {error_msg}")
 
+# Helper function to check transcoder job status
+def get_transcoder_job_status(transcoder_job_name: str) -> tuple[str, str]:
+    """
+    Helper function to check transcoder job status
+    Returns (state, details)
+    """
+    try:
+        transcoder_client = TranscoderServiceClient()
+        job = transcoder_client.get_job(name=transcoder_job_name)
+        state = job.state.name
+        
+        if state == "FAILED" and job.error:
+            details = f"Failed: {job.error.message}"
+        else:
+            details = f"Status: {state}"
+            
+        return state, details
+        
+    except Exception as e:
+        return "ERROR", f"Failed to check status: {str(e)}"
 
 async def process_metadata_generation(job_id: str, request: MetadataRequest):
     """
@@ -299,8 +395,8 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
     job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
     os.makedirs(job_temp_dir, exist_ok=True)
 
-    total_processed_clips_count = 0
-    generated_clips_paths = []
+    processed_clips_count = 0
+    generated_clip_blob_names = []
     clips_by_source_video = {}  # Key: source_blob_name, Value: list of clip_data
 
     try:
@@ -379,30 +475,30 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
                     logging.warning(f"Job {job_id}: Invalid time format '{time_range}'. Skipping clip.")
                     continue
 
-                clip_filename = f"{os.path.splitext(os.path.basename(source_blob_name))[0]}_clip_{total_processed_clips_count + 1}.mp4"
+                clip_filename = f"{os.path.splitext(os.path.basename(source_blob_name))[0]}_clip_{processed_clips_count + 1}.mp4"
                 local_clip_output_dir = os.path.join(job_temp_dir, "clips_output")
                 os.makedirs(local_clip_output_dir, exist_ok=True)
-                final_clip_path = os.path.join(local_clip_output_dir, clip_filename)
+                local_clip_path = os.path.join(local_clip_output_dir, clip_filename)
 
-                success, error = video_service.create_clip(local_video_path, final_clip_path, start_secs, end_secs)
+                success, error = video_service.create_clip(local_video_path, local_clip_path, start_secs, end_secs)
                 if not success:
                     logging.error(f"Job {job_id}: Failed to create clip {clip_filename}. Error: {error}")
                     continue
 
                 clip_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, clip_filename)
-                success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, final_clip_path, clip_blob_name)
+                success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_clip_path, clip_blob_name)
                 if not success:
                     logging.error(f"Job {job_id}: Failed to upload clip {clip_blob_name}. Error: {error}")
                 else:
-                    total_processed_clips_count += 1
-                    generated_clips_paths.append(clip_blob_name)
+                    processed_clips_count += 1
+                    generated_clip_blob_names.append(clip_blob_name)
 
             # Clean up the downloaded source video to save space
             if os.path.exists(local_video_path):
                 os.remove(local_video_path)
 
-        final_details = f"Successfully generated and uploaded {total_processed_clips_count} clips from {len(clips_by_source_video)} unique videos."
-        _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clips_paths})
+        final_details = f"Successfully generated and uploaded {processed_clips_count} clips from {len(clips_by_source_video)} unique videos."
+        _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clip_blob_names})
         logging.info(f"Job {job_id}: Clip generation completed.")
 
     except Exception as e:
@@ -420,7 +516,7 @@ def process_face_clip_generation(job_id: str, request: FaceClipGenerationRequest
     job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
     os.makedirs(job_temp_dir, exist_ok=True)
     
-    generated_clips_paths = []
+    generated_clip_blob_names = []
 
     try:
         # 1. Call the face recognition microservice
@@ -453,7 +549,7 @@ def process_face_clip_generation(job_id: str, request: FaceClipGenerationRequest
             details = f"Generating clip {i+1}/{len(scenes)}..."
             _write_job(job_id, {"status": "in_progress", "details": details})
             
-            clip_filename = f"{os.path.splitext(video_basename)[0]}_face_clip_{i+1}.mp4"
+            clip_filename = f"refined_{os.path.splitext(video_basename)[0]}_clip_{i+1}.mp4"
             local_clip_path = os.path.join(job_temp_dir, clip_filename)
 
             success, error = video_service.create_clip(local_video_path, local_clip_path, start_sec, end_sec)
@@ -464,12 +560,12 @@ def process_face_clip_generation(job_id: str, request: FaceClipGenerationRequest
             clip_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, clip_filename)
             success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_clip_path, clip_blob_name)
             if success:
-                generated_clips_paths.append(clip_blob_name)
+                generated_clip_blob_names.append(clip_blob_name)
             else:
                 logging.error(f"Job {job_id}: Failed to upload clip {clip_blob_name}. Error: {error}")
 
-        final_details = f"Successfully generated {len(generated_clips_paths)} clips based on face recognition."
-        _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clips_paths})
+        final_details = f"Successfully generated {len(generated_clip_blob_names)} clips based on face recognition."
+        _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clip_blob_names})
         logging.info(f"Job {job_id}: {final_details}")
 
     except requests.exceptions.RequestException as e:

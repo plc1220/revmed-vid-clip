@@ -12,7 +12,7 @@ def list_gcs_videos_via_api(bucket_name, prefix):
         response_list.raise_for_status()
         blob_names = response_list.json().get("files", [])
 
-        video_urls = []
+        videos = []
         for blob_name in blob_names:
             if not blob_name.endswith(('.mp4', '.mov', '.avi')):
                 continue
@@ -23,14 +23,26 @@ def list_gcs_videos_via_api(bucket_name, prefix):
             response_signed = requests.get(api_url_signed, params=params_signed)
             if response_signed.status_code == 200:
                 url = response_signed.json().get("url")
-                video_urls.append(url)
+                videos.append({"blob_name": blob_name, "url": url})
             else:
                 st.warning(f"Could not get signed URL for {blob_name}")
 
-        return video_urls
+        return videos
     except requests.exceptions.RequestException as e:
         st.error(f"Error listing GCS videos via API: {e}")
         return []
+
+def delete_gcs_videos_via_api(bucket_name, blob_names):
+    """Deletes videos from GCS via the backend API."""
+    try:
+        api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
+        payload = {"gcs_bucket": bucket_name, "blob_names": blob_names}
+        response = requests.post(api_url, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error deleting GCS videos via API: {e}")
+        return None
 
 def show():
     st.title("Final Result")
@@ -40,10 +52,26 @@ def show():
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
     joined_clips_prefix = os.path.join(workspace, "joined_clips/")
 
-    video_urls = list_gcs_videos_via_api(gcs_bucket_name, joined_clips_prefix)
+    videos = list_gcs_videos_via_api(gcs_bucket_name, joined_clips_prefix)
 
-    if video_urls:
-        for video_url in video_urls:
-            st.video(video_url)
+    if videos:
+        selected_videos = []
+        for video in videos:
+            col1, col2 = st.columns([0.1, 0.9])
+            with col1:
+                if st.checkbox("", key=video["blob_name"]):
+                    selected_videos.append(video["blob_name"])
+            with col2:
+                st.video(video["url"])
+
+        if selected_videos:
+            if st.button("Delete Selected"):
+                with st.spinner("Deleting videos..."):
+                    result = delete_gcs_videos_via_api(gcs_bucket_name, selected_videos)
+                    if result:
+                        st.success("Selected videos deleted successfully.")
+                        st.experimental_rerun()
+                    else:
+                        st.error("Failed to delete selected videos.")
     else:
         st.info("No joined clips found.")

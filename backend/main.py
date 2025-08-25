@@ -142,10 +142,47 @@ async def create_workspace(gcs_bucket: str = Query(None), workspace_name: str = 
 
 @app.get("/jobs/{job_id}", tags=["Jobs"])
 async def get_job_status(job_id: str):
-    """Retrieves the status of a background job."""
+    """Retrieves the status of a background job with enhanced transcoder details."""
     job = _read_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    
+    # If this is a transcoder job and still in progress, get live status
+    if (job.get("transcoder_job_name") and
+        job.get("status") in ["submitted", "in_progress"]):
+        
+        try:
+            from task_service import get_transcoder_job_status  # Import your helper
+            transcoder_state, transcoder_details = get_transcoder_job_status(
+                job["transcoder_job_name"]
+            )
+            
+            # Update job status based on transcoder state
+            if transcoder_state == "SUCCEEDED":
+                job["status"] = "completed"
+                job["details"] = f"Video splitting completed successfully. {job.get('num_segments', 'Multiple')} segments created."
+                _write_job(job_id, job)  # Persist the update
+                
+            elif transcoder_state == "FAILED":
+                job["status"] = "failed"
+                job["details"] = transcoder_details
+                _write_job(job_id, job)
+                
+            elif transcoder_state in ["RUNNING", "PENDING"]:
+                job["status"] = "in_progress"
+                job["details"] = f"Transcoder job {transcoder_state.lower()}..."
+                # Don't persist these temporary updates
+            
+            # Add transcoder-specific info to response
+            job["transcoder_status"] = {
+                "state": transcoder_state,
+                "details": transcoder_details
+            }
+            
+        except Exception as e:
+            # If transcoder status check fails, return existing job info
+            logging.warning(f"Failed to get transcoder status for job {job_id}: {e}")
+    
     return job
 
 @app.post("/generate-upload-url/", response_model=UploadURLResponse)
