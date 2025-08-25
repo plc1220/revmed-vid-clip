@@ -387,16 +387,16 @@ async def process_metadata_generation(job_id: str, request: MetadataRequest):
 def process_clip_generation(job_id: str, request: ClipGenerationRequest):
     """
     The actual logic for the clip generation background task.
-    This optimized version groups clips by source video to download each video only once.
+    This version uses the Google Cloud Transcoder API to generate clips.
     """
+    from google.cloud.video import transcoder_v1
+    
     _write_job(job_id, {"status": "in_progress", "details": "Starting clip generation."})
     logging.info(f"Job {job_id}: Starting clip generation from {len(request.metadata_blob_names)} metadata file(s).")
 
     job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
     os.makedirs(job_temp_dir, exist_ok=True)
 
-    processed_clips_count = 0
-    generated_clip_blob_names = []
     clips_by_source_video = {}  # Key: source_blob_name, Value: list of clip_data
 
     try:
@@ -426,7 +426,6 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
                     if not source_gcs_uri:
                         continue
 
-                    # Parse GCS URI to get blob name
                     if source_gcs_uri.startswith(f"gs://{request.gcs_bucket}/"):
                         source_blob_name = source_gcs_uri.split(f"gs://{request.gcs_bucket}/", 1)[1]
                         if source_blob_name not in clips_by_source_video:
@@ -438,29 +437,41 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
             except (json.JSONDecodeError, ValueError) as e:
                 logging.error(f"Job {job_id}: Invalid JSON in {metadata_blob_name}. Error: {e}")
                 continue
+        
+        # --- Step 2: Initialize Transcoder client and common settings ---
+        transcoder_client = TranscoderServiceClient()
+        project_id = os.environ["GOOGLE_CLOUD_PROJECT"]
+        location = os.environ["GOOGLE_CLOUD_LOCATION"]
+        parent = f"projects/{project_id}/locations/{location}"
 
-        # --- Step 2: Process clips for each source video ---
-        total_source_videos = len(clips_by_source_video)
-        logging.info(
-            f"Job {job_id}: Found {sum(len(c) for c in clips_by_source_video.values())} clips to generate from {total_source_videos} unique source videos."
-        )
+        elementary_streams = [
+            transcoder_v1.types.ElementaryStream(
+                key="video-stream0",
+                video_stream=transcoder_v1.types.VideoStream(
+                    h264=transcoder_v1.types.VideoStream.H264CodecSettings(
+                        bitrate_bps=2000000,
+                        frame_rate=30,
+                    ),
+                ),
+            ),
+            transcoder_v1.types.ElementaryStream(
+                key="audio-stream0",
+                audio_stream=transcoder_v1.types.AudioStream(
+                    codec="aac",
+                    bitrate_bps=128000,
+                ),
+            ),
+        ]
 
-        for i, (source_blob_name, clips_to_create) in enumerate(clips_by_source_video.items()):
-            details = f"Processing source video {i+1}/{total_source_videos}: {source_blob_name}"
-            _write_job(job_id, {"status": "in_progress", "details": details})
-            logging.info(f"Job {job_id}: {details}")
+        # --- Step 3: Create and submit a transcoder job for each clip ---
+        transcoder_job_names = []
+        total_clips_to_generate = sum(len(c) for c in clips_by_source_video.values())
+        logging.info(f"Job {job_id}: Found {total_clips_to_generate} clips to generate from {len(clips_by_source_video)} unique source videos.")
+        
+        processed_clips_count = 0
+        for source_blob_name, clips_to_create in clips_by_source_video.items():
+            input_uri = f"gs://{request.gcs_bucket}/{source_blob_name}"
 
-            # Download the source video ONCE
-            local_video_path = os.path.join(job_temp_dir, os.path.basename(source_blob_name))
-            logging.info(f"Job {job_id}: Downloading source video: gs://{request.gcs_bucket}/{source_blob_name}")
-            success, error = gcs_service.download_gcs_blob(request.gcs_bucket, source_blob_name, local_video_path)
-            if not success:
-                logging.error(
-                    f"Job {job_id}: Failed to download {source_blob_name}. Skipping all clips for this video. Error: {error}"
-                )
-                continue
-
-            # Create all clips from this one downloaded video
             for clip_data in clips_to_create:
                 time_range = clip_data.get("timestamp_start_end")
                 if not time_range:
@@ -475,29 +486,92 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
                     logging.warning(f"Job {job_id}: Invalid time format '{time_range}'. Skipping clip.")
                     continue
 
-                clip_filename = f"{os.path.splitext(os.path.basename(source_blob_name))[0]}_clip_{processed_clips_count + 1}.mp4"
-                local_clip_output_dir = os.path.join(job_temp_dir, "clips_output")
-                os.makedirs(local_clip_output_dir, exist_ok=True)
-                local_clip_path = os.path.join(local_clip_output_dir, clip_filename)
+                processed_clips_count += 1
+                clip_filename = f"{os.path.splitext(os.path.basename(source_blob_name))[0]}_clip_{processed_clips_count}.mp4"
 
-                success, error = video_service.create_clip(local_video_path, local_clip_path, start_secs, end_secs)
-                if not success:
-                    logging.error(f"Job {job_id}: Failed to create clip {clip_filename}. Error: {error}")
-                    continue
+                edit_atom = transcoder_v1.types.EditAtom(
+                    key=f"atom-clip-{processed_clips_count}",
+                    inputs=["input0"],
+                    start_time_offset=f"{start_secs:.3f}s",
+                    end_time_offset=f"{end_secs:.3f}s",
+                )
 
-                clip_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, clip_filename)
-                success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_clip_path, clip_blob_name)
-                if not success:
-                    logging.error(f"Job {job_id}: Failed to upload clip {clip_blob_name}. Error: {error}")
+                mux_stream = transcoder_v1.types.MuxStream(
+                    key=f"mux-clip-{processed_clips_count}",
+                    file_name=clip_filename,
+                    container="mp4",
+                    elementary_streams=["video-stream0", "audio-stream0"],
+                )
+
+                job_config = transcoder_v1.types.JobConfig(
+                    inputs=[transcoder_v1.types.Input(key="input0", uri=input_uri)],
+                    edit_list=[edit_atom],
+                    elementary_streams=elementary_streams,
+                    mux_streams=[mux_stream],
+                    output=transcoder_v1.types.Output(uri=f"gs://{request.gcs_bucket}/{request.workspace}/{request.output_gcs_prefix}/"),
+                )
+
+                transcoder_job = transcoder_v1.types.Job(config=job_config)
+                
+                details = f"Submitting job for clip {processed_clips_count}/{total_clips_to_generate}: {clip_filename}"
+                _write_job(job_id, {"status": "in_progress", "details": details})
+                logging.info(f"Job {job_id}: {details}")
+
+                response = transcoder_client.create_job(parent=parent, job=transcoder_job)
+                transcoder_job_names.append(response.name)
+                logging.info(f"Job {job_id}: Clip job {response.name} submitted")
+
+        _write_job(job_id, {
+            "status": "submitted",
+            "details": f"{len(transcoder_job_names)} transcoder jobs submitted for clip generation.",
+            "transcoder_job_names": transcoder_job_names,
+            "num_clips": len(transcoder_job_names)
+        })
+
+        # --- Step 4: Poll all transcoder jobs until completion ---
+        import time
+        max_wait_time = 900  # 15 minutes
+        poll_interval = 30   # 30 seconds
+        elapsed_time = 0
+        completed_jobs = set()
+
+        while elapsed_time < max_wait_time and len(completed_jobs) < len(transcoder_job_names):
+            try:
+                for job_name in transcoder_job_names:
+                    if job_name in completed_jobs:
+                        continue
+                    
+                    job_status = transcoder_client.get_job(name=job_name)
+                    state = job_status.state.name
+                    
+                    if state == "SUCCEEDED":
+                        completed_jobs.add(job_name)
+                        logging.info(f"Job {job_id}: Clip job {job_name} completed successfully")
+                        
+                    elif state == "FAILED":
+                        error_msg = job_status.error.message if job_status.error else "Unknown transcoder error"
+                        raise Exception(f"Transcoder job {job_name} failed: {error_msg}")
+                
+                if len(completed_jobs) == len(transcoder_job_names):
+                    final_details = f"Successfully generated {len(transcoder_job_names)} clips."
+                    _write_job(job_id, {"status": "completed", "details": final_details})
+                    logging.info(f"Job {job_id}: {final_details}")
+                    return
                 else:
-                    processed_clips_count += 1
-                    generated_clip_blob_names.append(clip_blob_name)
-
-            # Clean up the downloaded source video to save space
-            if os.path.exists(local_video_path):
-                os.remove(local_video_path)
-
-        final_details = f"Successfully generated and uploaded {processed_clips_count} clips from {len(clips_by_source_video)} unique videos."
+                    progress_msg = f"Processing clips... ({len(completed_jobs)}/{len(transcoder_job_names)} completed, {elapsed_time}s elapsed)"
+                    _write_job(job_id, {"status": "in_progress", "details": progress_msg})
+                    logging.info(f"Job {job_id}: {progress_msg}")
+                
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+                
+            except Exception as poll_error:
+                logging.error(f"Job {job_id}: Error polling transcoder status: {str(poll_error)}")
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+        
+        if len(completed_jobs) < len(transcoder_job_names):
+            raise Exception(f"Clip generation timed out after {max_wait_time} seconds. {len(completed_jobs)}/{len(transcoder_job_names)} jobs completed.")
         _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clip_blob_names})
         logging.info(f"Job {job_id}: Clip generation completed.")
 
