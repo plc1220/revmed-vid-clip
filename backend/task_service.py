@@ -2,6 +2,7 @@ import json
 import os
 import math
 import logging
+import time
 from google.cloud.video.transcoder_v1.services.transcoder_service import TranscoderServiceClient
 from google.cloud.video.transcoder_v1.types import Job, JobConfig, Input, EditAtom, ElementaryStream, MuxStream, Output
 import shutil
@@ -650,57 +651,106 @@ def process_face_clip_generation(job_id: str, request: FaceClipGenerationRequest
     finally:
         if os.path.exists(job_temp_dir):
             shutil.rmtree(job_temp_dir)
+# def process_joining(job_id: str, request: JoinRequest):
+#     """The actual logic for the video joining background task."""
+#     _write_job(job_id, {"status": "in_progress", "details": "Starting video joining process."})
+#     logging.info(f"Job {job_id}: Starting video joining for {len(request.clip_blob_names)} clips.")
+#
+#     job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
+#     os.makedirs(job_temp_dir, exist_ok=True)
+#
+#     local_clip_paths = []
+#     try:
+#         # --- Step 1: Download all clips to join ---
+#         for i, blob_name in enumerate(request.clip_blob_names):
+#             details = f"Downloading clip {i+1}/{len(request.clip_blob_names)}: {blob_name}"
+#             _write_job(job_id, {"status": "in_progress", "details": details})
+#             logging.info(f"Job {job_id}: {details}")
+#
+#             local_path = os.path.join(job_temp_dir, os.path.basename(blob_name))
+#             success, error = gcs_service.download_gcs_blob(request.gcs_bucket, blob_name, local_path)
+#             if not success:
+#                 raise Exception(f"Failed to download clip {blob_name}: {error}")
+#             local_clip_paths.append(local_path)
+#
+#         # --- Step 2: Join the downloaded clips ---
+#         output_filename = f"joined_video_{job_id}.mp4"
+#         local_output_path = os.path.join(job_temp_dir, output_filename)
+#
+#         details = f"Joining {len(local_clip_paths)} clips..."
+#         _write_job(job_id, {"status": "in_progress", "details": details})
+#         logging.info(f"Job {job_id}: {details}")
+#
+#         success, error = video_service.join_videos(local_clip_paths, local_output_path)
+#         if not success:
+#             raise Exception(f"Failed to join videos: {error}")
+#
+#         # --- Step 3: Upload the joined video ---
+#         output_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, output_filename)
+#         details = f"Uploading joined video to {output_blob_name}..."
+#         _write_job(job_id, {"status": "in_progress", "details": details})
+#         logging.info(f"Job {job_id}: {details}")
+#
+#         success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_output_path, output_blob_name)
+#         if not success:
+#             raise Exception(f"Failed to upload joined video: {error}")
+#
+#         final_details = f"Successfully joined {len(request.clip_blob_names)} clips into gs://{request.gcs_bucket}/{output_blob_name}"
+#         _write_job(job_id, {"status": "completed", "details": final_details, "generated_file": f"gs://{request.gcs_bucket}/{output_blob_name}"})
+#         logging.info(f"Job {job_id}: {final_details}")
+#
+#     except Exception as e:
+#         _write_job(job_id, {"status": "failed", "details": str(e)})
+#         logging.error(f"Job {job_id}: Failed - {str(e)}")
+#     finally:
+#         if os.path.exists(job_temp_dir):
+#             shutil.rmtree(job_temp_dir)
+
 def process_joining(job_id: str, request: JoinRequest):
-    """The actual logic for the video joining background task."""
+    """
+    The actual logic for the video joining background task.
+    This version uses the Google Cloud Transcoder API.
+    """
+    import uuid
     _write_job(job_id, {"status": "in_progress", "details": "Starting video joining process."})
-    logging.info(f"Job {job_id}: Starting video joining for {len(request.clip_blob_names)} clips.")
-
-    job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
-    os.makedirs(job_temp_dir, exist_ok=True)
     
-    local_clip_paths = []
     try:
-        # --- Step 1: Download all clips to join ---
-        for i, blob_name in enumerate(request.clip_blob_names):
-            details = f"Downloading clip {i+1}/{len(request.clip_blob_names)}: {blob_name}"
-            _write_job(job_id, {"status": "in_progress", "details": details})
-            logging.info(f"Job {job_id}: {details}")
+        # --- Data Transformation ---
+        # Convert blob names to full GCS URIs
+        gcs_clip_uris = [f"gs://{request.gcs_bucket}/{blob_name}" for blob_name in request.clip_blob_names]
+        logging.info(f"Job {job_id}: Starting video joining process for {len(gcs_clip_uris)} clips.")
 
-            local_path = os.path.join(job_temp_dir, os.path.basename(blob_name))
-            success, error = gcs_service.download_gcs_blob(request.gcs_bucket, blob_name, local_path)
-            if not success:
-                raise Exception(f"Failed to download clip {blob_name}: {error}")
-            local_clip_paths.append(local_path)
-
-        # --- Step 2: Join the downloaded clips ---
-        output_filename = f"joined_video_{job_id}.mp4"
-        local_output_path = os.path.join(job_temp_dir, output_filename)
+        # Generate a unique filename for the output video
+        output_filename = f"joined_video_{uuid.uuid4()}.mp4"
         
-        details = f"Joining {len(local_clip_paths)} clips..."
-        _write_job(job_id, {"status": "in_progress", "details": details})
-        logging.info(f"Job {job_id}: {details}")
+        # Construct the full GCS output URI, which must be a directory.
+        output_uri = f"gs://{request.gcs_bucket}/{request.workspace}/{request.output_gcs_prefix}/"
 
-        success, error = video_service.join_videos(local_clip_paths, local_output_path)
-        if not success:
-            raise Exception(f"Failed to join videos: {error}")
+        # --- Transcoder Job ---
+        project_id = os.environ["GOOGLE_CLOUD_PROJECT"]
+        location = os.environ["GOOGLE_CLOUD_LOCATION"]
 
-        # --- Step 3: Upload the joined video ---
-        output_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, output_filename)
-        details = f"Uploading joined video to {output_blob_name}..."
-        _write_job(job_id, {"status": "in_progress", "details": details})
-        logging.info(f"Job {job_id}: {details}")
+        job_name, error = video_service.join_videos_transcoder(
+            project_id=project_id,
+            location=location,
+            clip_uris=gcs_clip_uris,
+            output_uri=output_uri,
+        )
 
-        success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_output_path, output_blob_name)
-        if not success:
-            raise Exception(f"Failed to upload joined video: {error}")
+        if error:
+            raise Exception(f"Failed to create transcoder job: {error}")
 
-        final_details = f"Successfully joined {len(request.clip_blob_names)} clips into gs://{request.gcs_bucket}/{output_blob_name}"
-        _write_job(job_id, {"status": "completed", "details": final_details, "generated_file": f"gs://{request.gcs_bucket}/{output_blob_name}"})
-        logging.info(f"Job {job_id}: {final_details}")
+        _write_job(
+            job_id,
+            {
+                "status": "submitted",
+                "details": f"Transcoder job '{job_name}' submitted for joining clips.",
+                "transcoder_job_name": job_name,
+                "output_uri": output_uri
+            },
+        )
+        logging.info(f"Job {job_id}: Transcoder job '{job_name}' submitted.")
 
     except Exception as e:
         _write_job(job_id, {"status": "failed", "details": str(e)})
         logging.error(f"Job {job_id}: Failed - {str(e)}")
-    finally:
-        if os.path.exists(job_temp_dir):
-            shutil.rmtree(job_temp_dir)

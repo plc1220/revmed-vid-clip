@@ -321,6 +321,10 @@ async def split_video_endpoint(request: SplitRequest, background_tasks: Backgrou
     return _queue_background_job(background_tasks, task_service.process_splitting, request)
 @app.post("/join-videos/", tags=["Video Processing"], status_code=202)
 async def join_videos_endpoint(request: JoinRequest, background_tasks: BackgroundTasks):
+    """
+    Queues a background job to join multiple video clips into a single video.
+    The transformation logic is now handled within the background task itself.
+    """
     return _queue_background_job(background_tasks, task_service.process_joining, request)
 
 
