@@ -354,3 +354,26 @@ def create_workspace(bucket_name: str, workspace_name: str) -> Tuple[bool, str]:
         error_msg = f"An unexpected error occurred while creating workspace '{workspace_name}': {e}"
         logging.error(error_msg)
         return False, error_msg
+
+def copy_gcs_blob(
+    source_bucket_name: str,
+    source_blob_name: str,
+    destination_bucket_name: str,
+    destination_blob_name: str,
+) -> Tuple[bool, str]:
+    """Copies a blob from a source bucket to a destination bucket."""
+    try:
+        storage_client = get_storage_client()
+        source_bucket = storage_client.bucket(source_bucket_name)
+        source_blob = source_bucket.blob(source_blob_name)
+        destination_bucket = storage_client.bucket(destination_bucket_name)
+
+        if not source_blob.exists():
+            return False, f"Source blob gs://{source_bucket_name}/{source_blob_name} not found."
+
+        source_bucket.copy_blob(source_blob, destination_bucket, destination_blob_name)
+        return True, ""
+    except Exception as e:
+        error_msg = f"Error copying GCS blob from gs://{source_bucket_name}/{source_blob_name} to gs://{destination_bucket_name}/{destination_blob_name}: {e}"
+        logging.error(error_msg)
+        return False, error_msg

@@ -4,6 +4,7 @@ import os
 import requests
 import time
 from utils import poll_job_status
+from localization import get_translator
 
 
 def gcs_direct_uploader(api_base_url: str, gcs_bucket: str, workspace: str):
@@ -195,24 +196,25 @@ def get_uploaded_videos(bucket_name, workspace):
 
 
 def render_tab1(allowed_video_extensions_param: list):
-    st.header("Step 1: Video Split")
+    t = get_translator()
+    st.header(t("step1_header"))
 
     gcs_bucket = st.session_state.GCS_BUCKET_NAME
     workspace = st.session_state.workspace
     uploaded_videos = get_uploaded_videos(gcs_bucket, workspace)
 
     if not uploaded_videos:
-        st.warning("No uploaded videos found in the workspace. Please upload a video first.", icon=":material/warning:")
+        st.warning(t("no_videos_warning"), icon=":material/warning:")
     else:
-        st.info("Select one of the uploaded videos to proceed, or upload a new video", icon=":material/info:")
+        st.info(t("select_video_info"), icon=":material/info:")
     
-    st.subheader("Upload a new video")
+    st.subheader(t("upload_video_subheader"))
     gcs_direct_uploader(
         api_base_url=st.session_state.API_BASE_URL, gcs_bucket=gcs_bucket, workspace=st.session_state.workspace
     )
 
-    st.subheader("Select a video to split")
-    gcs_blob_name = st.selectbox("Select a video:", get_uploaded_videos(gcs_bucket, workspace))
+    st.subheader(t("select_video_to_split_subheader"))
+    gcs_blob_name = st.selectbox(t("select_video_label"), get_uploaded_videos(gcs_bucket, workspace))
 
     # Initialize session state variables for splitting job
     if "split_job_id" not in st.session_state:
@@ -223,16 +225,16 @@ def render_tab1(allowed_video_extensions_param: list):
         st.session_state.split_job_details = ""
 
     segment_duration_min = st.number_input(
-        "Max duration per chunk (minutes):", min_value=1, value=5, step=1, key="segment_duration_input"
+        t("max_duration_label"), min_value=1, value=5, step=1, key="segment_duration_input"
     )
 
-    if st.button("🚀 Start Splitting Job", key="start_split_job_button"):
+    if st.button(t("start_splitting_button"), key="start_split_job_button"):
         st.session_state.split_job_id = None
         st.session_state.split_job_status = None
         st.session_state.split_job_details = ""
 
         try:
-            with st.spinner("Starting video splitting job..."):
+            with st.spinner(t("splitting_job_spinner")):
                 split_url = f"{st.session_state.API_BASE_URL}/split-video/"
                 payload = {
                     "workspace": st.session_state.workspace,
@@ -246,11 +248,11 @@ def render_tab1(allowed_video_extensions_param: list):
                 split_data = split_response.json()
                 st.session_state.split_job_id = split_data.get("job_id")
                 st.session_state.split_job_status = "pending"
-                st.success(f"Backend job started successfully! Job ID: {st.session_state.split_job_id}")
-                st.info("The video is being processed in the background. You can monitor the status below.")
+                st.success(t("backend_job_start_success").format(job_id=st.session_state.split_job_id))
+                st.info(t("background_processing_info"))
 
         except requests.exceptions.RequestException as e:
-            error_message = f"An API error occurred: {e}"
+            error_message = t("api_error_message").format(e=e)
             if e.response:
                 error_message += f" - {e.response.text}"
             st.error(error_message)
@@ -259,6 +261,6 @@ def render_tab1(allowed_video_extensions_param: list):
     # --- Job Status Polling ---
     if st.session_state.get("split_job_id"):
         st.markdown("---")
-        st.subheader("Processing Status")
+        st.subheader(t("processing_status_subheader"))
         poll_job_status(st.session_state.split_job_id)
         st.session_state.split_job_id = None # Clear job so we can start another

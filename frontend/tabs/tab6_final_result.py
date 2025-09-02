@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import os
+from localization import get_translator
 
 def list_gcs_videos_via_api(bucket_name, prefix):
     """Lists videos in GCS via the backend API and gets signed URLs."""
@@ -29,7 +30,7 @@ def list_gcs_videos_via_api(bucket_name, prefix):
 
         return videos
     except requests.exceptions.RequestException as e:
-        st.error(f"Error listing GCS videos via API: {e}")
+        # st.error(f"Error listing GCS videos via API: {e}")
         return []
 
 def delete_gcs_videos_via_api(bucket_name, blob_names):
@@ -45,8 +46,9 @@ def delete_gcs_videos_via_api(bucket_name, blob_names):
         return None
 
 def show():
-    st.title("Final Result")
-    st.header("Joined Clips")
+    t = get_translator()
+    st.title(t("final_result_title"))
+    st.header(t("joined_clips_header"))
 
     workspace = st.session_state.workspace
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
@@ -56,22 +58,22 @@ def show():
 
     if videos:
         selected_videos = []
-        for video in videos:
+        for i, video in enumerate(videos):
             col1, col2 = st.columns([0.1, 0.9])
             with col1:
-                if st.checkbox("", key=video["blob_name"]):
+                # Use a safer key based on the index to avoid issues with special characters in blob_name
+                if st.checkbox("", key=f"final_video_{i}"):
                     selected_videos.append(video["blob_name"])
             with col2:
                 st.video(video["url"])
 
         if selected_videos:
-            if st.button("Delete Selected"):
-                with st.spinner("Deleting videos..."):
+            if st.button(t("delete_selected_button")):
+                with st.spinner(t("deleting_videos_spinner")):
                     result = delete_gcs_videos_via_api(gcs_bucket_name, selected_videos)
                     if result:
-                        st.success("Selected videos deleted successfully.")
-                        st.experimental_rerun()
+                        st.success(t("delete_videos_success"))
                     else:
-                        st.error("Failed to delete selected videos.")
+                        st.error(t("delete_videos_error"))
     else:
-        st.info("No joined clips found.")
+        st.info(t("no_joined_clips_info"))

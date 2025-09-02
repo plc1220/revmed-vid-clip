@@ -1,26 +1,45 @@
 steps:
+# Build the container image
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service', '.']
-- name: 'gcr.io/cloud-builders/docker'
-  args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service']
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: gcloud
+  dir: 'backend' # Set the working directory to the backend folder
   args:
-  - 'run'
-  - 'deploy'
-  - 'face-recognition-service'
-  - '--image'
-  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service'
-  - '--region'
-  - 'asia-southeast1'
-  - '--platform'
-  - 'managed'
-  - '--allow-unauthenticated'
-  - '--cpu'
-  - '4'
-  - '--memory'
-  - '16Gi'
-  - '--set-env-vars'
-  - 'BACKEND_URL=https://backend-dvgm2r6s4q-as.a.run.app'
+  - 'build'
+  - '-t'
+  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job'
+  - '-f'
+  - 'face_recognition_microservice/Dockerfile'
+  - '.' # Build context is now the 'backend' directory
+
+# Push the container image
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job']
+
+# Deploy as a Cloud Run Job (create if missing, update if exists)
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: bash
+  args:
+    - -c
+    - |
+      set -e
+      if gcloud beta run jobs describe face-recognition-job --region asia-southeast1 >/dev/null 2>&1; then
+        echo "Updating existing job..."
+        gcloud beta run jobs update face-recognition-job \
+          --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job \
+          --region asia-southeast1 \
+          --cpu 4 \
+          --memory 16Gi \
+          --tasks 1 \
+          --max-retries 1
+      else
+        echo "Creating new job..."
+        gcloud beta run jobs create face-recognition-job \
+          --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job \
+          --region asia-southeast1 \
+          --cpu 4 \
+          --memory 16Gi \
+          --tasks 1 \
+          --max-retries 1
+      fi
+
 images:
-- 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-service'
+- 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job'

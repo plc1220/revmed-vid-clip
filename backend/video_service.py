@@ -1,11 +1,6 @@
 import os
-import math
-import io
 import ffmpeg
-import subprocess
-import shutil
 import tempfile
-import uuid
 from typing import List, Tuple
 import logging
 from google.cloud.video import transcoder_v1
@@ -16,181 +11,56 @@ from google.cloud.video.transcoder_v1.services.transcoder_service import (
 
 def get_video_duration(video_path: str) -> Tuple[float, str]:
     """
-    Gets the duration of a video file in seconds using ffprobe.
+    Gets the duration of a video file in seconds using ffmpeg-python.
     Returns a tuple of (duration_in_seconds, error_message_string).
     """
     try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                video_path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-            text=True,
-        )
-        duration_seconds = float(result.stdout.strip())
-        if duration_seconds < 0:
+        probe = ffmpeg.probe(video_path)
+        duration = float(probe["format"]["duration"])
+        if duration < 0:
             return 0.0, "FFprobe reported a negative duration."
-        return duration_seconds, ""
-    except FileNotFoundError:
-        error_msg = "`ffprobe` command not found. Ensure FFmpeg is installed and in the system's PATH."
-        logging.error(f"ERROR: {error_msg}")
-        return 0.0, error_msg
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Error getting duration for {os.path.basename(video_path)} with ffprobe. stderr: {e.stderr}"
+        return duration, ""
+    except ffmpeg.Error as e:
+        error_msg = f"Error getting duration for {os.path.basename(video_path)} with ffprobe. stderr: {e.stderr.decode('utf8')}"
         logging.error(error_msg)
         return 0.0, error_msg
-    except ValueError as e:
+    except (ValueError, KeyError) as e:
         error_msg = f"Error parsing ffprobe duration output for {os.path.basename(video_path)}: {e}."
         logging.error(error_msg)
         return 0.0, error_msg
     except Exception as e:
-        error_msg = f"Unexpected error getting duration for {os.path.basename(video_path)}: {e}"
+        error_msg = (
+            f"Unexpected error getting duration for {os.path.basename(video_path)}: {e}"
+        )
         logging.error(error_msg)
         return 0.0, error_msg
 
+import gcs_service
 
-def split_video(video_path: str, segment_duration_seconds: int, output_dir: str) -> Tuple[List[str], str]:
+def get_video_duration_from_gcs(bucket_name: str, blob_name: str) -> Tuple[float, str]:
     """
-    Splits a video into segments of a specified duration.
-    Returns a tuple of (list_of_output_paths, error_message_string).
+    Gets the duration of a video in GCS by reading only the beginning of the file.
+    This avoids downloading the entire video file.
     """
-    # If the video path is a URL, we don't check for existence on the local filesystem.
-    is_url = video_path.startswith("http://") or video_path.startswith("https://")
-    if not is_url and not os.path.exists(video_path):
-        return [], f"Video file not found: {video_path}"
+    try:
+        storage_client = gcs_service.get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
 
-    os.makedirs(output_dir, exist_ok=True)
+        # Download the first 1MB of the file, which should contain the header
+        # for most video formats.
+        video_header_bytes = blob.download_as_bytes(start=0, end=1024 * 1024)
 
-    total_duration, err = get_video_duration(video_path)
-    if err:
-        return [], f"Could not get video duration: {err}"
+        # Use a temporary file to pass the header to ffprobe
+        with tempfile.NamedTemporaryFile() as tmp:
+            tmp.write(video_header_bytes)
+            tmp.flush()  # Ensure all data is written to the file
+            return get_video_duration(tmp.name)
 
-    if total_duration <= 0:
-        return [], f"Video '{os.path.basename(video_path)}' has zero or negative duration. Cannot split."
-
-    num_segments = math.ceil(total_duration / segment_duration_seconds)
-    saved_segment_paths = []
-    # Sanitize the base name to remove query parameters from URLs
-    base_name_full = os.path.basename(video_path)
-    base_name_sanitized = base_name_full.split("?")[0]
-    base_name, ext = os.path.splitext(base_name_sanitized)
-
-    for i in range(num_segments):
-        start_time = i * segment_duration_seconds
-        current_segment_duration = min(segment_duration_seconds, total_duration - start_time)
-
-        if current_segment_duration <= 0:
-            continue
-
-        segment_file_name = f"{base_name}_part_{i+1:03d}{ext}"
-        output_path = os.path.join(output_dir, segment_file_name)
-
-        logging.info(
-            f"  [Segment {i+1}/{num_segments}] Start: {start_time}s, Duration: {current_segment_duration:.2f}s, Output: {output_path}"
-        )
-        try:
-            logging.info(f"    > Attempting to split with codec 'copy'...")
-            (
-                ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
-                .output(output_path, c="copy", avoid_negative_ts=1)
-                .overwrite_output()
-                .run(capture_stdout=True, capture_stderr=True)
-            )
-            logging.info(f"    > Successfully split with codec 'copy'.")
-            saved_segment_paths.append(output_path)
-        except ffmpeg.Error as e:
-            # If 'copy' codec fails, try re-encoding
-            logging.warning(f"    > Codec 'copy' failed for segment {i+1}. Trying re-encoding.")
-            logging.warning(f"    > FFmpeg error (copy): {e.stderr.decode('utf8')}")
-            try:
-                logging.info(f"    > Attempting to split with re-encoding (libx264/aac)...")
-                (
-                    ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
-                    .output(output_path, vcodec="libx264", acodec="aac", strict="experimental", avoid_negative_ts=1)
-                    .overwrite_output()
-                    .run(capture_stdout=True, capture_stderr=True)
-                )
-                logging.info(f"    > Successfully split with re-encoding.")
-                saved_segment_paths.append(output_path)
-            except ffmpeg.Error as e2:
-                error_msg = f"Error splitting segment {i+1} (re-encode): {e2.stderr.decode('utf8')}"
-                logging.error(f"    > FATAL: Re-encoding also failed.")
-                logging.error(error_msg)
-                return saved_segment_paths, error_msg  # Return partial success and the error
-
-    return saved_segment_paths, ""
-
-def split_video_stream(video_path: str, segment_duration_seconds: int):
-    """
-    Splits a video from a URL into segments and yields them as in-memory bytes.
-    This is a generator function.
-    """
-    total_duration, err = get_video_duration(video_path)
-    if err:
-        raise RuntimeError(f"Could not get video duration: {err}")
-
-    if total_duration <= 0:
-        logging.warning(f"Video '{os.path.basename(video_path)}' has zero or negative duration. Cannot split.")
-        return
-
-    num_segments = math.ceil(total_duration / segment_duration_seconds)
-    base_name_full = os.path.basename(video_path)
-    base_name_sanitized = base_name_full.split("?")[0]
-    base_name, ext = os.path.splitext(base_name_sanitized)
-
-    for i in range(num_segments):
-        start_time = i * segment_duration_seconds
-        current_segment_duration = min(segment_duration_seconds, total_duration - start_time)
-
-        if current_segment_duration <= 0:
-            continue
-
-        segment_file_name = f"{base_name}_part_{i+1:03d}{ext}"
-        logging.info(
-            f"  [Segment {i+1}/{num_segments}] Start: {start_time}s, Duration: {current_segment_duration:.2f}s"
-        )
-        
-        try:
-            # Process the video segment in memory
-            process = (
-                ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
-                .output('pipe:', format='mp4', movflags='frag_keyframe+empty_moov', c='copy', avoid_negative_ts=1)
-                .run_async(pipe_stdout=True, pipe_stderr=True)
-            )
-            
-            out_bytes, err_bytes = process.communicate()
-
-            if process.returncode != 0:
-                # If copy fails, try re-encoding
-                logging.warning(f"    > Codec 'copy' failed for segment {i+1}. Trying re-encoding. Error: {err_bytes.decode('utf8')}")
-                process = (
-                    ffmpeg.input(video_path, ss=start_time, t=current_segment_duration)
-                    .output('pipe:', format='mp4', movflags='frag_keyframe+empty_moov', vcodec="libx264", acodec="aac", strict="experimental", avoid_negative_ts=1)
-                    .run_async(pipe_stdout=True, pipe_stderr=True)
-                )
-                out_bytes, err_bytes = process.communicate()
-
-                if process.returncode != 0:
-                    raise ffmpeg.Error("ffmpeg", out_bytes, err_bytes)
-
-            # Yield the segment filename and the in-memory bytes
-            yield segment_file_name, io.BytesIO(out_bytes)
-
-        except ffmpeg.Error as e:
-            error_msg = f"Error splitting segment {i+1} into stream: {e.stderr.decode('utf8')}"
-            logging.error(error_msg)
-            # We can choose to stop or continue. For now, we stop.
-            raise RuntimeError(error_msg)
-
+    except Exception as e:
+        error_msg = f"Unexpected error getting duration from GCS for gs://{bucket_name}/{blob_name}: {e}"
+        logging.error(error_msg)
+        return 0.0, error_msg
 
 def create_clip(
     source_video_path: str, output_clip_path: str, start_seconds: float, end_seconds: float
@@ -231,7 +101,7 @@ def create_clip(
         logging.error(error_msg)
         return False, error_msg
 
-
+# Keeping this part in case we want the fade effect in the future.
 # def _has_audio_stream(video_path: str) -> bool:
 #     """Checks if a video file has an audio stream using ffprobe."""
 #     try:

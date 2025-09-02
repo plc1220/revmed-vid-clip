@@ -4,6 +4,7 @@ import requests
 import time
 import datetime
 from utils import poll_job_status
+from localization import get_translator
 
 # Define the base URL for the backend API
 
@@ -39,10 +40,11 @@ def list_gcs_clips_for_display(bucket_name, prefix):
         return [], f"Error processing GCS clips for display: {e}"
 
 def render_tab5():
+    t = get_translator()
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
     workspace = st.session_state.workspace
-    st.header("🎬 Video Stitcher")
-    st.markdown("Select clips from GCS, then stitch them together into a new video.")
+    st.header(t("step5_header"))
+    st.markdown(t("step5_subheader"))
 
     # Initialize session state
     if 'selected_clips_for_joining' not in st.session_state:
@@ -55,55 +57,69 @@ def render_tab5():
         st.session_state.join_job_details = ""
 
     # --- Source Selection ---
-    st.subheader("1. Select Clip Source")
-    source_options = {
-        "Refined Clips": os.path.join(workspace, "refined_clips/"),
-        "Original Clips": os.path.join(workspace, "clips/")
+    st.subheader(t("select_clip_source_subheader"))
+    # Use non-translated keys for logic
+    source_keys = {
+        "refined_clips": os.path.join(workspace, "refined_clips/"),
+        "original_clips": os.path.join(workspace, "clips/")
     }
     
-    if 'clip_source_folder' not in st.session_state:
-        st.session_state.clip_source_folder = "Refined Clips"
+    # Translate keys for display
+    source_options_display = {
+        t("refined_clips_option"): "refined_clips",
+        t("original_clips_option"): "original_clips"
+    }
+    
+    if 'clip_source_key' not in st.session_state:
+        st.session_state.clip_source_key = "refined_clips" # Default to the key
 
     def on_source_change():
+        # The widget's key holds the *display value*, so we need to find the corresponding internal key
+        display_value = st.session_state.clip_source_selector
+        st.session_state.clip_source_key = source_options_display[display_value]
         st.session_state.selected_clips_for_joining = [] # Clear selection on source change
 
-    selected_source_name = st.selectbox(
-        "Choose the folder to get clips from:",
-        options=list(source_options.keys()),
-        index=list(source_options.keys()).index(st.session_state.clip_source_folder),
+    # We need to find the current display value that corresponds to our stored key
+    current_display_value = [k for k, v in source_options_display.items() if v == st.session_state.clip_source_key][0]
+    
+    st.selectbox(
+        t("choose_clip_folder_label"),
+        options=source_options_display.keys(),
+        index=list(source_options_display.keys()).index(current_display_value),
         key="clip_source_selector",
         on_change=on_source_change
     )
-    st.session_state.clip_source_folder = selected_source_name
-    clips_gcs_prefix = source_options[selected_source_name]
+
+    # Use the stored key to get the correct path
+    clips_gcs_prefix = source_keys[st.session_state.clip_source_key]
     
     joined_clips_gcs_prefix = "joined_clips/" # This can remain global or be namespaced too
 
     st.markdown("---")
-    st.subheader("2. Select Clips to Join")
+    st.subheader(t("select_clips_to_join_subheader"))
     clips_data, error = list_gcs_clips_for_display(gcs_bucket_name, clips_gcs_prefix)
     if error:
-        st.error(error)
+        st.error(t("display_gcs_clips_error").format(e=error))
         return
 
     if not clips_data:
-        st.info(f"No video clips found in GCS bucket '{gcs_bucket_name}' under prefix '{clips_gcs_prefix}'.")
+        st.info(t("no_clips_in_gcs_info").format(bucket_name=gcs_bucket_name, prefix=clips_gcs_prefix))
         return
 
-    st.subheader(f"Available Clips from gs://{gcs_bucket_name}/{clips_gcs_prefix}")
+    st.subheader(t("available_clips_subheader").format(bucket_name=gcs_bucket_name, prefix=clips_gcs_prefix))
     
     # --- Clip Selection ---
     col1, col2, col3, _ = st.columns([0.15, 0.15, 0.2, 0.5])
     with col1:
-        if st.button("Select All", key="select_all_clips_joining"):
+        if st.button(t("select_all_button"), key="select_all_clips_joining"):
             st.session_state.selected_clips_for_joining = clips_data.copy()
             st.rerun()
     with col2:
-        if st.button("Deselect All", key="deselect_all_clips_joining"):
+        if st.button(t("deselect_all_button"), key="deselect_all_clips_joining"):
             st.session_state.selected_clips_for_joining = []
             st.rerun()
     with col3:
-        if st.button("Delete Selected", key="delete_selected_clips_joining"):
+        if st.button(t("delete_selected_button"), key="delete_selected_clips_joining"):
             if st.session_state.selected_clips_for_joining:
                 errors = []
                 for clip in st.session_state.selected_clips_for_joining:
@@ -116,17 +132,17 @@ def render_tab5():
                         response = requests.delete(api_url, json=payload)
                         response.raise_for_status()
                     except requests.exceptions.RequestException as e:
-                        errors.append(f"Failed to delete {clip['filename']}. Error: {e}")
+                        errors.append(t("delete_selected_clips_error").format(filename=clip['filename'], e=e))
                 
                 if errors:
                     st.error("\\n".join(errors))
                 else:
-                    st.success("All selected clips deleted successfully.")
+                    st.success(t("delete_all_selected_clips_success"))
                 
                 st.session_state.selected_clips_for_joining = []
                 st.rerun()
 
-    num_columns = st.slider("Number of columns for clip display:", 1, 5, 3)
+    num_columns = st.slider(t("columns_for_display_slider"), 1, 5, 3)
     cols = st.columns(num_columns)
     
     currently_selected_names = [c['name'] for c in st.session_state.selected_clips_for_joining]
@@ -138,14 +154,14 @@ def render_tab5():
 
             c1, c2 = st.columns([0.8, 0.2])
             with c1:
-                if st.checkbox(f"Select {clip_info['filename']}", value=is_selected, key=f"select_{clip_info['name']}"):
+                if st.checkbox(t("select_checkbox").format(filename=clip_info['filename']), value=is_selected, key=f"select_{clip_info['name']}"):
                     if not is_selected:
                         st.session_state.selected_clips_for_joining.append(clip_info)
                 else:
                     if is_selected:
                         st.session_state.selected_clips_for_joining = [c for c in st.session_state.selected_clips_for_joining if c['name'] != clip_info['name']]
             with c2:
-                if st.button("🗑️", key=f"delete_clip_{clip_info['name']}", help=f"Delete {clip_info['filename']}"):
+                if st.button("🗑️", key=f"delete_clip_{clip_info['name']}", help=t("delete_clip_button_help").format(filename=clip_info['filename'])):
                     try:
                         api_url = f"{st.session_state.API_BASE_URL}/delete-gcs-blob/"
                         payload = {
@@ -156,18 +172,18 @@ def render_tab5():
                         response.raise_for_status()
                         # Also remove from selection if it was selected
                         st.session_state.selected_clips_for_joining = [c for c in st.session_state.selected_clips_for_joining if c['name'] != clip_info['name']]
-                        st.success(f"Deleted {clip_info['filename']}.")
+                        st.success(t("delete_single_clip_success").format(filename=clip_info['filename']))
                         st.rerun()
                     except requests.exceptions.RequestException as e:
-                        st.error(f"Failed to delete {clip_info['filename']}. Error: {e}")
+                        st.error(t("delete_single_clip_error").format(filename=clip_info['filename'], e=e))
 
     # --- Display Order and Join Button ---
     if st.session_state.selected_clips_for_joining:
-        st.subheader("Selected Clips (in order of joining):")
+        st.subheader(t("selected_clips_subheader"))
         ordered_filenames = [f"{idx+1}. {c['filename']}" for idx, c in enumerate(st.session_state.selected_clips_for_joining)]
         st.write(" -> ".join(ordered_filenames))
 
-        if st.button("🎬 Stitch Selected Clips via API", key="join_videos_button"):
+        if st.button(t("stitch_clips_button"), key="join_videos_button"):
             st.session_state.join_job_id = None
             st.session_state.join_job_status = "starting"
             st.session_state.join_job_details = "Initializing video joining job..."
@@ -186,17 +202,17 @@ def render_tab5():
                 data = response.json()
                 st.session_state.join_job_id = data.get("job_id")
                 st.session_state.join_job_status = "pending"
-                st.success(f"Backend job for joining videos started! Job ID: {st.session_state.join_job_id}")
+                st.success(t("backend_job_start_success").format(job_id=st.session_state.join_job_id))
 
             except requests.exceptions.RequestException as e:
-                st.error(f"Failed to start joining job. API connection error: {e}")
+                st.error(t("video_joining_job_start_error").format(e=e))
                 st.session_state.join_job_id = None
     else:
-        st.info("Select one or more clips to enable the stitching option.")
+        st.info(t("select_clips_to_stitch_info"))
 
     # --- Job Status Polling ---
     if st.session_state.get("join_job_id"):
         st.markdown("---")
-        st.subheader("Processing Status")
+        st.subheader(t("processing_status_subheader"))
         poll_job_status(st.session_state.join_job_id)
         st.session_state.join_job_id = None

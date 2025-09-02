@@ -12,6 +12,10 @@ COPY requirements.txt .
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy specific directories needed by the app
+COPY ./languages ./languages
+COPY ./tabs ./tabs
+
 # Copy the rest of the application's code from the host to the container at /app
 COPY . .
 

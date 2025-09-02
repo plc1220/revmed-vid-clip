@@ -7,6 +7,7 @@ import time
 import pandas as pd
 from typing import Optional
 from utils import poll_job_status
+from localization import get_translator
 
 # Define the base URL for the backend API
 
@@ -24,12 +25,13 @@ def load_metadata_content(gcs_bucket_name, gcs_blob_name):
         raise Exception(f"Failed to download {gcs_blob_name}. Error: {e}")
 
 def render_tab3():
+    t = get_translator()
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
     workspace = st.session_state.workspace
     metadata_gcs_prefix = os.path.join(workspace, "metadata/")
     clips_output_prefix = st.session_state.GCS_OUTPUT_CLIPS_PREFIX
 
-    st.header("Step 3: Clips Generation")
+    st.header(t("step3_header"))
 
     # Initialize session state
     if "clips_job_id" not in st.session_state:
@@ -42,7 +44,7 @@ def render_tab3():
         st.session_state.generated_clips_list = []
 
     # --- GCS Metadata File Listing ---
-    st.subheader(f"Select Metadata Files from gs://{gcs_bucket_name}/{metadata_gcs_prefix}")
+    st.subheader(t("select_metadata_files_subheader").format(bucket_name=gcs_bucket_name, prefix=metadata_gcs_prefix))
     gcs_metadata_files = []
     
     if gcs_bucket_name:
@@ -53,11 +55,11 @@ def render_tab3():
             response.raise_for_status()
             gcs_metadata_files = response.json().get("files", [])
         except requests.exceptions.RequestException as e:
-            st.error(f"Error listing metadata files from GCS: {e}")
+            # st.error(t("list_metadata_files_error").format(e=e))
             gcs_metadata_files = []
 
     if not gcs_metadata_files:
-        st.warning(f"No metadata (.json) files found in 'gs://{gcs_bucket_name}/{metadata_gcs_prefix}'. Please generate metadata in Step 2.")
+        st.warning(t("no_metadata_files_warning").format(bucket_name=gcs_bucket_name, prefix=metadata_gcs_prefix))
         return
 
     # Initialize or update selection state
@@ -70,20 +72,20 @@ def render_tab3():
     # --- Selection Controls ---
     col1, col2, col3, _ = st.columns([0.15, 0.15, 0.2, 0.55])
     with col1:
-        if st.button("Select All", key="select_all_metadata"):
+        if st.button(t("select_all_button"), key="select_all_metadata"):
             for uri in gcs_metadata_files:
                 st.session_state.metadata_selection[uri] = True
             st.rerun()
     with col2:
-        if st.button("Deselect All", key="deselect_all_metadata"):
+        if st.button(t("deselect_all_button"), key="deselect_all_metadata"):
             for uri in gcs_metadata_files:
                 st.session_state.metadata_selection[uri] = False
             st.rerun()
     with col3:
-        if st.button("Delete Selected", key="delete_selected_metadata"):
+        if st.button(t("delete_selected_button"), key="delete_selected_metadata"):
             selected_metadata_to_delete = [uri for uri, selected in st.session_state.metadata_selection.items() if selected]
             if not selected_metadata_to_delete:
-                st.warning("No metadata files selected for deletion.")
+                st.warning(t("no_metadata_selected_for_deletion_warning"))
             else:
                 try:
                     api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
@@ -98,7 +100,7 @@ def render_tab3():
                     failed_files = response.json().get("failed_files", {})
 
                     if deleted_files:
-                        st.success(f"Successfully deleted {len(deleted_files)} metadata file(s).")
+                        st.success(t("delete_metadata_success").format(count=len(deleted_files)))
                         load_metadata_content.clear()
                         # Unselect deleted files
                         for uri in deleted_files:
@@ -107,30 +109,30 @@ def render_tab3():
                     
                     if failed_files:
                         for uri, error in failed_files.items():
-                            st.error(f"Failed to delete {os.path.basename(uri)}: {error}")
+                            st.error(t("delete_metadata_fail").format(filename=os.path.basename(uri), error=error))
                     
                     st.rerun()
 
                 except requests.exceptions.RequestException as e:
-                    st.error(f"An API error occurred during batch deletion: {e}")
+                    st.error(t("batch_deletion_api_error").format(e=e))
                 except Exception as e:
-                    st.error(f"An unexpected error occurred: {e}")
+                    st.error(t("unexpected_error").format(e=e))
 
     # --- Metadata File List with Checkboxes ---
-    st.write("Choose metadata files to use for clip generation:")
+    st.write(t("choose_metadata_for_clips_label"))
     for uri in gcs_metadata_files:
         file_basename = os.path.basename(uri)
         with st.expander(file_basename):
             col1, col2 = st.columns([0.8, 0.2])
             with col1:
                 is_selected = st.checkbox(
-                    "Select for clip generation",
+                    t("select_for_clip_generation_checkbox"),
                     value=st.session_state.metadata_selection.get(uri, False),
                     key=f"cb_meta_{uri}"
                 )
                 st.session_state.metadata_selection[uri] = is_selected
             with col2:
-                if st.button("Delete", key=f"delete_meta_{uri}"):
+                if st.button(t("delete_button"), key=f"delete_meta_{uri}"):
                     try:
                         api_url = f"{st.session_state.API_BASE_URL}/delete-gcs-blob/"
                         payload = {
@@ -139,12 +141,12 @@ def render_tab3():
                         }
                         response = requests.delete(api_url, json=payload)
                         response.raise_for_status()
-                        st.success(f"Deleted {file_basename}.")
+                        st.success(t("delete_metadata_file_success").format(filename=file_basename))
                         # Clear the cache for the deleted file to ensure it's re-fetched if re-uploaded
                         load_metadata_content.clear()
                         st.rerun()
                     except requests.exceptions.RequestException as e:
-                        st.error(f"Failed to delete {file_basename}. Error: {e}")
+                        st.error(t("delete_metadata_file_error").format(filename=file_basename, e=e))
 
             # Display metadata content automatically using the cached function
             try:
@@ -152,23 +154,23 @@ def render_tab3():
                 df = pd.DataFrame(metadata_content)
                 st.dataframe(df)
             except Exception as e:
-                st.error(f"Could not load content for {file_basename}: {e}")
+                st.error(t("load_metadata_error").format(filename=file_basename, e=e))
 
     selected_metadata_files = [uri for uri, selected in st.session_state.metadata_selection.items() if selected]
 
     if selected_metadata_files:
-        st.success(f"Selected {len(selected_metadata_files)} metadata file(s).")
+        st.success(t("selected_metadata_files_success").format(count=len(selected_metadata_files)))
         
         st.markdown("---")
         output_gcs_prefix = st.text_input(
-            "GCS Prefix for Output Clips:",
+            t("output_gcs_prefix_label"),
             value=clips_output_prefix,
             key="output_gcs_prefix_tab3"
         )
 
-        if st.button("✨ Generate Clips for Selected Files", key="generate_clips_button_tab3"):
+        if st.button(t("generate_clips_button"), key="generate_clips_button_tab3"):
             if not output_gcs_prefix:
-                st.warning("Please provide a GCS prefix for the output clips.")
+                st.warning(t("provide_gcs_prefix_warning"))
                 return
 
             st.session_state.clips_job_id = None
@@ -190,16 +192,16 @@ def render_tab3():
                 data = response.json()
                 st.session_state.clips_job_id = data.get("job_id")
                 st.session_state.clips_job_status = "pending"
-                st.success(f"Backend job for clip generation started! Job ID: {st.session_state.clips_job_id}")
+                st.success(t("backend_job_start_success").format(job_id=st.session_state.clips_job_id))
 
             except requests.exceptions.RequestException as e:
-                st.error(f"Failed to start clip generation job. API connection error: {e}")
+                st.error(t("clip_generation_job_start_error").format(e=e))
                 st.session_state.clips_job_id = None
 
     # --- Job Status Polling ---
     if st.session_state.get("clips_job_id"):
         st.markdown("---")
-        st.subheader("Processing Status")
+        st.subheader(t("processing_status_subheader"))
         poll_job_status(st.session_state.clips_job_id)
         st.session_state.clips_job_id = None
         st.rerun()
@@ -207,7 +209,7 @@ def render_tab3():
     # --- Display Generated Clips ---
     if st.session_state.get("generated_clips_list"):
         st.markdown("---")
-        st.subheader("✅ Generated Clips")
+        st.subheader(t("generated_clips_subheader"))
 
         # In a real app, you'd get these from a config or the API
         gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
@@ -228,15 +230,15 @@ def render_tab3():
                     error = response.text
                 
                 if error:
-                    st.error(f"Could not get URL for `{os.path.basename(clip_blob_name)}`: {error}")
+                    st.error(t("get_clip_url_error").format(filename=os.path.basename(clip_blob_name), error=error))
                 else:
                     st.video(signed_url)
                     st.caption(os.path.basename(clip_blob_name))
 
             except Exception as e:
-                st.error(f"An error occurred while trying to display the video `{os.path.basename(clip_blob_name)}`: {e}")
+                st.error(t("display_video_error").format(filename=os.path.basename(clip_blob_name), e=e))
 
-        if st.button("Clear Generated Clips", key="clear_clips_button"):
+        if st.button(t("clear_generated_clips_button"), key="clear_clips_button"):
             st.session_state.generated_clips_list = []
             st.rerun()
     

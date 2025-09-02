@@ -6,6 +6,7 @@ import json
 import pandas as pd
 from utils import get_gcs_files
 from utils import poll_job_status
+from localization import get_translator
 
 # Define the base URL for the backend API
 
@@ -33,6 +34,8 @@ For each potential trailer moment you identify **within this video clip**, extra
 Based on the video content and the prioritization criteria, identify the best moments and generate the corresponding metadata for each. The output format is handled by a JSON schema, so you only need to focus on the content of the analysis.
 
 **CRITICAL GUARDRAIL:** The `timestamp_start_end` value is the most important field. It **MUST** be accurate. The end time of the clip cannot exceed the `actual_video_duration` of **`{{actual_video_duration}}`**. Any timestamp generated beyond this duration is invalid and will be discarded. Double-check your generated timestamps against the video's length before finalizing the output.
+
+**Output Language:** Please generate the output in **{{language}}**.
 """
 
 @st.cache_data
@@ -51,12 +54,13 @@ def render_tab2(
     ai_model_name_global: str,
     allowed_video_extensions_global: list
 ):
+    t = get_translator()
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
     workspace = st.session_state.workspace
     segments_prefix = os.path.join(workspace, "segments/")
     metadata_output_prefix = st.session_state.GCS_METADATA_PREFIX
 
-    st.header(f"Step 2: Metadata Generation from Segment Folders (gs://{gcs_bucket_name}/{segments_prefix})")
+    st.header(t("step2_header").format(bucket_name=gcs_bucket_name, prefix=segments_prefix))
 
     # Initialize session state
     if "metadata_job_id" not in st.session_state:
@@ -79,16 +83,16 @@ def render_tab2(
     # --- GCS File Listing ---
     gcs_video_uris = []
     if not gcs_bucket_name:
-        st.error("GCS Bucket name for videos not provided.")
+        st.error(t("gcs_bucket_not_provided_error"))
     else:
         blob_names = get_gcs_files(gcs_bucket_name, segments_prefix)
         gcs_video_uris = [f"gs://{gcs_bucket_name}/{name}" for name in blob_names]
 
         if not gcs_video_uris:
-            st.warning(f"No video segment files found in 'gs://{gcs_bucket_name}/{segments_prefix}'. Please split a video in Step 1.")
+            st.warning(t("no_video_segments_warning").format(bucket_name=gcs_bucket_name, prefix=segments_prefix))
 
     if gcs_video_uris:
-        st.success(f"Found {len(gcs_video_uris)} video segment file(s).")
+        st.success(t("found_video_segments_success").format(count=len(gcs_video_uris)))
 
         # Initialize or update selection state
         if 'video_selection' not in st.session_state:
@@ -101,20 +105,20 @@ def render_tab2(
         # --- Selection Controls ---
         col1, col2, col3, _ = st.columns([0.15, 0.15, 0.2, 0.55])
         with col1:
-            if st.button("Select All", key="select_all_videos"):
+            if st.button(t("select_all_button"), key="select_all_videos"):
                 for uri in gcs_video_uris:
                     st.session_state.video_selection[uri] = True
                 st.rerun()
         with col2:
-            if st.button("Deselect All", key="deselect_all_videos"):
+            if st.button(t("deselect_all_button"), key="deselect_all_videos"):
                 for uri in gcs_video_uris:
                     st.session_state.video_selection[uri] = False
                 st.rerun()
         with col3:
-            if st.button("Delete Selected", key="delete_selected_videos"):
+            if st.button(t("delete_selected_button"), key="delete_selected_videos"):
                 selected_videos_to_delete = [uri for uri, selected in st.session_state.video_selection.items() if selected]
                 if not selected_videos_to_delete:
-                    st.warning("No videos selected for deletion.")
+                    st.warning(t("no_videos_selected_for_deletion_warning"))
                 else:
                     try:
                         api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
@@ -128,7 +132,7 @@ def render_tab2(
                         response = requests.post(api_url, json=payload)
                         response.raise_for_status() # Will raise an exception for 4xx/5xx errors
                         
-                        st.success(f"Successfully deleted {len(blob_names_to_delete)} video(s).")
+                        st.success(t("delete_success_message").format(count=len(blob_names_to_delete)))
                         
                         # Unselect the deleted files from the UI
                         for uri in selected_videos_to_delete:
@@ -138,12 +142,12 @@ def render_tab2(
                         st.rerun()
 
                     except requests.exceptions.RequestException as e:
-                        st.error(f"An API error occurred during batch deletion: {e}")
+                        st.error(t("batch_deletion_api_error").format(e=e))
                     except Exception as e:
-                        st.error(f"An unexpected error occurred: {e}")
+                        st.error(t("unexpected_error").format(e=e))
 
         # --- Video List with Checkboxes ---
-        st.write("Select video files to process for metadata generation:")
+        st.write(t("select_videos_for_metadata_label"))
         for uri in gcs_video_uris:
             # The key must be unique, so we use the uri itself
             is_selected = st.checkbox(
@@ -155,22 +159,19 @@ def render_tab2(
 
         # --- Prompt and Generate Button ---
         st.text_area(
-            "Optional User Prompt:",
+            t("user_prompt_label"),
             value=st.session_state.user_prompt,
             height=100,
             key="user_prompt_widget",
             on_change=lambda: setattr(st.session_state, 'user_prompt', st.session_state.user_prompt_widget),
-            help="Add any specific instructions or context for the AI. This will be added to the main prompt."
+            help=t("user_prompt_help")
         )
 
-        with st.expander("View Full Prompt Template"):
-            st.code(st.session_state.batch_prompt_text_area_content, language='text')
-
-        if st.button("✨ Generate Metadata for Selected Files", key="batch_process_gemini_button_gcs"):
+        if st.button(t("generate_metadata_button"), key="batch_process_gemini_button_gcs"):
             selected_videos = [uri for uri, selected in st.session_state.video_selection.items() if selected]
             
             if not selected_videos:
-                st.warning("No video files are selected. Please check at least one video.")
+                st.warning(t("no_videos_selected_warning"))
                 return
 
             st.session_state.metadata_job_id = None
@@ -182,13 +183,18 @@ def render_tab2(
             try:
                 api_url = f"{st.session_state.API_BASE_URL}/generate-metadata/"
                 prompt_with_user_input = st.session_state.batch_prompt_text_area_content + "\n\n" + st.session_state.user_prompt
+                
+                # Get the current language from the session state, which is set in app.py
+                language = st.session_state.get("selected_language", "English")
+
                 payload = {
                     "workspace": workspace,
                     "gcs_bucket": gcs_bucket_name,
                     "gcs_video_uris": selected_videos,
                     "prompt_template": prompt_with_user_input,
                     "ai_model_name": ai_model_name_global,
-                    "gcs_output_prefix": metadata_output_prefix
+                    "gcs_output_prefix": metadata_output_prefix,
+                    "language": language
                 }
                 response = requests.post(api_url, json=payload)
                 response.raise_for_status()
@@ -196,27 +202,27 @@ def render_tab2(
                 data = response.json()
                 st.session_state.metadata_job_id = data.get("job_id")
                 st.session_state.metadata_job_status = "pending"
-                st.success(f"Backend job for metadata generation started! Job ID: {st.session_state.metadata_job_id}")
+                st.success(t("backend_job_start_success").format(job_id=st.session_state.metadata_job_id))
 
             except requests.exceptions.RequestException as e:
-                st.error(f"Failed to start metadata job. API connection error: {e}")
+                st.error(t("metadata_job_start_error").format(e=e))
                 st.session_state.metadata_job_id = None
 
     # --- Job Status Polling ---
     if st.session_state.get("metadata_job_id"):
         st.markdown("---")
-        st.subheader("Processing Status")
+        st.subheader(t("processing_status_subheader"))
         poll_job_status(st.session_state.metadata_job_id)
         st.session_state.metadata_job_id = None # Clear job
         st.rerun()
 
     if st.session_state.get("generated_metadata_files"):
         st.markdown("---")
-        st.subheader("✅ Generated Metadata Files")
+        st.subheader(t("generated_metadata_files_subheader"))
 
         for gcs_uri in st.session_state.generated_metadata_files:
             file_basename = os.path.basename(gcs_uri)
-            with st.expander(f"View Metadata for: {file_basename}"):
+            with st.expander(t("view_metadata_expander").format(filename=file_basename)):
                 try:
                     gcs_path_str = gcs_uri.split("gs://")[1]
                     gcs_bucket_name, gcs_blob_name = gcs_path_str.split('/', 1)
@@ -224,9 +230,9 @@ def render_tab2(
                     df = pd.DataFrame(metadata_content)
                     st.dataframe(df)
                 except Exception as e:
-                    st.error(f"Could not load content for {file_basename}: {e}")
+                    st.error(t("load_metadata_error").format(filename=file_basename, e=e))
 
-        if st.button("Clear All Results", key="clear_metadata_results_button"):
+        if st.button(t("clear_results_button"), key="clear_metadata_results_button"):
             st.session_state.generated_metadata_files = []
             st.session_state.viewed_metadata_content = {}
             st.rerun()

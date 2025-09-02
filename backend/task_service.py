@@ -2,20 +2,18 @@ import json
 import os
 import math
 import logging
-import time
-from google.cloud.video.transcoder_v1.services.transcoder_service import TranscoderServiceClient
-from google.cloud.video.transcoder_v1.types import Job, JobConfig, Input, EditAtom, ElementaryStream, MuxStream, Output
 import shutil
-
-
 from dotenv import load_dotenv
-import logging
+import requests
+
+# Import Google Cloud clients
+from google.cloud.video.transcoder_v1.services.transcoder_service import TranscoderServiceClient
+from google.cloud import tasks_v2
 
 # Import services
 import gcs_service
 import video_service
 import ai_service
-import requests
 
 # Import schemas
 from schemas import (
@@ -27,6 +25,82 @@ from schemas import (
 )
 
 load_dotenv()
+
+# --- File-based Job Store ---
+JOB_STORE_PATH = "./job_store"
+os.makedirs(JOB_STORE_PATH, exist_ok=True)
+
+def _get_job_path(job_id: str) -> str:
+    return os.path.join(JOB_STORE_PATH, f"{job_id}.json")
+
+def _read_job(job_id: str) -> dict:
+    job_path = _get_job_path(job_id)
+    if not os.path.exists(job_path):
+        return None
+    try:
+        with open(job_path, "r") as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                return None
+        return data
+    except (IOError, json.JSONDecodeError):
+        return None
+
+def _write_job(job_id: str, job_data: dict):
+    job_path = _get_job_path(job_id)
+    with open(job_path, "w") as f:
+        json.dump(job_data, f)
+
+# --- Temporary Storage Configuration ---
+TEMP_STORAGE_PATH = "./api_temp_storage"
+os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
+
+# --- Cloud Tasks Helper ---
+def create_face_recognition_task(request_data: dict, job_id: str) -> str:
+    """
+    Creates a Google Cloud Task to trigger the face recognition Cloud Run Job.
+    """
+    client = tasks_v2.CloudTasksClient()
+
+    # Get configuration from environment variables
+    project = os.environ["GOOGLE_CLOUD_PROJECT"]
+    location = os.environ["GOOGLE_CLOUD_LOCATION"]
+    queue = os.environ["FACE_RECOGNITION_QUEUE"]
+    job_url = os.environ["FACE_RECOGNITION_JOB_URL"]
+    service_account_email = os.environ["CLOUD_TASKS_SERVICE_ACCOUNT"]
+
+    parent = client.queue_path(project, location, queue)
+
+    gcs_cast_photo_uris = request_data.get("gcs_cast_photo_uris", [])
+    
+    # Construct the HTTP request for the task.
+    task = {
+        "http_request": {
+            "http_method": tasks_v2.HttpMethod.POST,
+            "url": job_url,
+            "headers": {"Content-type": "application/json"},
+            "oauth_token": {"service_account_email": service_account_email},
+            "body": json.dumps({
+                "overrides": {
+                    "container_overrides": [
+                        {
+                            "env": [
+                                {"name": "GCS_BUCKET", "value": request_data["gcs_bucket"]},
+                                {"name": "GCS_VIDEO_URI", "value": request_data["gcs_video_uri"]},
+                                {"name": "GCS_CAST_PHOTO_URIS", "value": ",".join(gcs_cast_photo_uris)},
+                                {"name": "JOB_ID", "value": job_id},
+                            ]
+                        }
+                    ]
+                }
+            }).encode()
+        }
+    }
+
+    response = client.create_task(parent=parent, task=task)
+    logging.info(f"Created Cloud Task: {response.name}")
+    return response.name
 
 # --- File-based Job Store ---
 JOB_STORE_PATH = "./job_store"
@@ -58,7 +132,6 @@ def _write_job(job_id: str, job_data: dict):
     job_path = _get_job_path(job_id)
     with open(job_path, "w") as f:
         json.dump(job_data, f)
-
 
 # --- Temporary Storage Configuration ---
 TEMP_STORAGE_PATH = "./api_temp_storage"
@@ -384,7 +457,6 @@ async def process_metadata_generation(job_id: str, request: MetadataRequest):
         if os.path.exists(job_temp_dir):
             shutil.rmtree(job_temp_dir)
 
-
 def process_clip_generation(job_id: str, request: ClipGenerationRequest):
     """
     The actual logic for the clip generation background task.
@@ -583,128 +655,30 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
         if os.path.exists(job_temp_dir):
             shutil.rmtree(job_temp_dir)
 
-def process_face_clip_generation(job_id: str, request: FaceClipGenerationRequest):
-    """Orchestrates face recognition-based clip generation by calling the microservice."""
-    _write_job(job_id, {"status": "in_progress", "details": "Starting face recognition clip generation."})
-    logging.info(f"Job {job_id}: Calling face recognition microservice for video {request.gcs_video_uri}.")
-
-    job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
-    os.makedirs(job_temp_dir, exist_ok=True)
-    
-    generated_clip_blob_names = []
+def process_face_detection_and_copy(job_id: str, request: FaceClipGenerationRequest):
+    """
+    Orchestrates face detection by dispatching a Cloud Task.
+    The actual copying logic will need to be handled differently, perhaps by another job
+    or by inspecting the results of the face detection job. For now, this just dispatches the job.
+    """
+    _write_job(job_id, {"status": "in_progress", "details": "Dispatching face detection job."})
+    logging.info(f"Job {job_id}: Dispatching face detection job for video {request.gcs_video_uri}")
 
     try:
-        # 1. Call the face recognition microservice
-        fr_service_url = os.getenv("FACE_RECOGNITION_SERVICE_URL", "http://face-recognition-service:8001") + "/process-video/"
-        payload = {
-            "gcs_bucket": request.gcs_bucket,
-            "gcs_video_uri": request.gcs_video_uri,
-            "gcs_cast_photo_uris": request.gcs_cast_photo_uris,
-        }
-        response = requests.post(fr_service_url, json=payload)
-        response.raise_for_status()
-        scenes = response.json()
+        # Convert Pydantic model to dict to pass to task creator
+        request_data = request.dict()
+        task_name = create_face_recognition_task(request_data, job_id)
+        _write_job(job_id, {
+            "status": "submitted",
+            "details": f"Successfully dispatched face detection job. Task: {task_name}",
+            "task_name": task_name
+        })
+        logging.info(f"Job {job_id}: Face detection task {task_name} created.")
 
-        if not scenes:
-            _write_job(job_id, {"status": "completed", "details": "No scenes found with the specified cast members.", "generated_clips": []})
-            return
-
-        # 2. Download the source video once for clipping
-        _write_job(job_id, {"status": "in_progress", "details": f"Downloading video for clipping: {request.gcs_video_uri}"})
-        video_basename = os.path.basename(request.gcs_video_uri)
-        local_video_path = os.path.join(job_temp_dir, video_basename)
-        source_blob_name = request.gcs_video_uri.split(f"gs://{request.gcs_bucket}/", 1)[1]
-        success, error = gcs_service.download_gcs_blob(request.gcs_bucket, source_blob_name, local_video_path)
-        if not success:
-            raise Exception(f"Failed to download video {request.gcs_video_uri}: {error}")
-
-        # 3. Create and upload clips based on the scenes returned by the microservice
-        for i, scene in enumerate(scenes):
-            start_sec, end_sec = scene["start_time"], scene["end_time"]
-            details = f"Generating clip {i+1}/{len(scenes)}..."
-            _write_job(job_id, {"status": "in_progress", "details": details})
-            
-            clip_filename = f"refined_{os.path.splitext(video_basename)[0]}_clip_{i+1}.mp4"
-            local_clip_path = os.path.join(job_temp_dir, clip_filename)
-
-            success, error = video_service.create_clip(local_video_path, local_clip_path, start_sec, end_sec)
-            if not success:
-                logging.error(f"Job {job_id}: Failed to create clip {clip_filename}. Error: {error}")
-                continue
-
-            clip_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, clip_filename)
-            success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_clip_path, clip_blob_name)
-            if success:
-                generated_clip_blob_names.append(clip_blob_name)
-            else:
-                logging.error(f"Job {job_id}: Failed to upload clip {clip_blob_name}. Error: {error}")
-
-        final_details = f"Successfully generated {len(generated_clip_blob_names)} clips based on face recognition."
-        _write_job(job_id, {"status": "completed", "details": final_details, "generated_clips": generated_clip_blob_names})
-        logging.info(f"Job {job_id}: {final_details}")
-
-    except requests.exceptions.RequestException as e:
-        _write_job(job_id, {"status": "failed", "details": f"Failed to connect to face recognition service: {e}"})
     except Exception as e:
-        _write_job(job_id, {"status": "failed", "details": str(e)})
-        logging.error(f"Job {job_id}: Failed - {str(e)}")
-    finally:
-        if os.path.exists(job_temp_dir):
-            shutil.rmtree(job_temp_dir)
-# def process_joining(job_id: str, request: JoinRequest):
-#     """The actual logic for the video joining background task."""
-#     _write_job(job_id, {"status": "in_progress", "details": "Starting video joining process."})
-#     logging.info(f"Job {job_id}: Starting video joining for {len(request.clip_blob_names)} clips.")
-#
-#     job_temp_dir = os.path.join(TEMP_STORAGE_PATH, job_id)
-#     os.makedirs(job_temp_dir, exist_ok=True)
-#
-#     local_clip_paths = []
-#     try:
-#         # --- Step 1: Download all clips to join ---
-#         for i, blob_name in enumerate(request.clip_blob_names):
-#             details = f"Downloading clip {i+1}/{len(request.clip_blob_names)}: {blob_name}"
-#             _write_job(job_id, {"status": "in_progress", "details": details})
-#             logging.info(f"Job {job_id}: {details}")
-#
-#             local_path = os.path.join(job_temp_dir, os.path.basename(blob_name))
-#             success, error = gcs_service.download_gcs_blob(request.gcs_bucket, blob_name, local_path)
-#             if not success:
-#                 raise Exception(f"Failed to download clip {blob_name}: {error}")
-#             local_clip_paths.append(local_path)
-#
-#         # --- Step 2: Join the downloaded clips ---
-#         output_filename = f"joined_video_{job_id}.mp4"
-#         local_output_path = os.path.join(job_temp_dir, output_filename)
-#
-#         details = f"Joining {len(local_clip_paths)} clips..."
-#         _write_job(job_id, {"status": "in_progress", "details": details})
-#         logging.info(f"Job {job_id}: {details}")
-#
-#         success, error = video_service.join_videos(local_clip_paths, local_output_path)
-#         if not success:
-#             raise Exception(f"Failed to join videos: {error}")
-#
-#         # --- Step 3: Upload the joined video ---
-#         output_blob_name = os.path.join(request.workspace, request.output_gcs_prefix, output_filename)
-#         details = f"Uploading joined video to {output_blob_name}..."
-#         _write_job(job_id, {"status": "in_progress", "details": details})
-#         logging.info(f"Job {job_id}: {details}")
-#
-#         success, error = gcs_service.upload_gcs_blob(request.gcs_bucket, local_output_path, output_blob_name)
-#         if not success:
-#             raise Exception(f"Failed to upload joined video: {error}")
-#
-#         final_details = f"Successfully joined {len(request.clip_blob_names)} clips into gs://{request.gcs_bucket}/{output_blob_name}"
-#         _write_job(job_id, {"status": "completed", "details": final_details, "generated_file": f"gs://{request.gcs_bucket}/{output_blob_name}"})
-#         logging.info(f"Job {job_id}: {final_details}")
-#
-#     except Exception as e:
-#         _write_job(job_id, {"status": "failed", "details": str(e)})
-#         logging.error(f"Job {job_id}: Failed - {str(e)}")
-#     finally:
-#         if os.path.exists(job_temp_dir):
-#             shutil.rmtree(job_temp_dir)
+        error_msg = f"Failed to dispatch face detection job: {str(e)}"
+        _write_job(job_id, {"status": "failed", "details": error_msg})
+        logging.error(f"Job {job_id}: {error_msg}", exc_info=True)
 
 def process_joining(job_id: str, request: JoinRequest):
     """
@@ -754,3 +728,5 @@ def process_joining(job_id: str, request: JoinRequest):
     except Exception as e:
         _write_job(job_id, {"status": "failed", "details": str(e)})
         logging.error(f"Job {job_id}: Failed - {str(e)}")
+
+

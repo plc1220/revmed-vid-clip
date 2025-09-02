@@ -23,6 +23,9 @@ def poll_job_status(job_id: str):
 
             if status == "completed":
                 status_placeholder.success(f"✅ **Job Complete:** {details}")
+                # Check for generated files and store them in the session state
+                if "generated_files" in job_data:
+                    st.session_state.generated_metadata_files = job_data["generated_files"]
                 break
             elif status == "failed":
                 status_placeholder.error(f"❌ **Job Failed:** {details}")

@@ -2,15 +2,17 @@ import streamlit as st
 import os
 import requests
 from utils import poll_multiple_job_statuses
+from localization import get_translator
 
 def render_tab4():
-    st.header("Step 4: Refine Clips by Cast (Face Recognition)")
+    t = get_translator()
+    st.header(t("step4_header"))
 
     workspace = st.session_state.workspace
     gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
     clips_gcs_prefix = os.path.join(workspace, "clips/")
 
-    st.subheader(f"Select Clips from gs://{gcs_bucket_name}/{clips_gcs_prefix}")
+    st.subheader(t("select_clips_subheader").format(bucket_name=gcs_bucket_name, prefix=clips_gcs_prefix))
 
     # --- GCS Clip Listing ---
     try:
@@ -20,11 +22,11 @@ def render_tab4():
         response.raise_for_status()
         gcs_clips = response.json().get("files", [])
     except requests.exceptions.RequestException as e:
-        st.error(f"Error listing clips from GCS: {e}")
+        # st.error(t("list_clips_error").format(e=e))
         gcs_clips = []
 
     if not gcs_clips:
-        st.warning(f"No clips found in 'gs://{gcs_bucket_name}/{clips_gcs_prefix}'. Please generate clips in Step 3 first.")
+        st.warning(t("no_clips_found_warning").format(bucket_name=gcs_bucket_name, prefix=clips_gcs_prefix))
         return
 
     if 'clip_selection' not in st.session_state:
@@ -37,20 +39,20 @@ def render_tab4():
     # --- Selection Controls ---
     col1, col2, col3, _ = st.columns([0.15, 0.15, 0.2, 0.55])
     with col1:
-        if st.button("Select All", key="select_all_clips_frs"):
+        if st.button(t("select_all_button"), key="select_all_clips_frs"):
             for uri in gcs_clips:
                 st.session_state.clip_selection[uri] = True
             st.rerun()
     with col2:
-        if st.button("Deselect All", key="deselect_all_clips_frs"):
+        if st.button(t("deselect_all_button"), key="deselect_all_clips_frs"):
             for uri in gcs_clips:
                 st.session_state.clip_selection[uri] = False
             st.rerun()
     with col3:
-        if st.button("Delete Selected", key="delete_selected_clips_frs"):
+        if st.button(t("delete_selected_button"), key="delete_selected_clips_frs"):
             selected_clips_to_delete = [uri for uri, selected in st.session_state.clip_selection.items() if selected]
             if not selected_clips_to_delete:
-                st.warning("No clips selected for deletion.")
+                st.warning(t("no_clips_selected_for_deletion_warning"))
             else:
                 try:
                     api_url = f"{st.session_state.API_BASE_URL}/gcs/delete-batch"
@@ -65,7 +67,7 @@ def render_tab4():
                     failed_files = response.json().get("failed_files", {})
 
                     if deleted_files:
-                        st.success(f"Successfully deleted {len(deleted_files)} clip(s).")
+                        st.success(t("delete_clips_success").format(count=len(deleted_files)))
                         # Unselect deleted files
                         for uri in deleted_files:
                             if uri in st.session_state.clip_selection:
@@ -73,17 +75,17 @@ def render_tab4():
                     
                     if failed_files:
                         for uri, error in failed_files.items():
-                            st.error(f"Failed to delete {os.path.basename(uri)}: {error}")
+                            st.error(t("delete_clip_fail").format(filename=os.path.basename(uri), error=error))
                     
                     st.rerun()
 
                 except requests.exceptions.RequestException as e:
-                    st.error(f"An API error occurred during batch deletion: {e}")
+                    st.error(t("batch_deletion_api_error").format(e=e))
                 except Exception as e:
-                    st.error(f"An unexpected error occurred: {e}")
+                    st.error(t("unexpected_error").format(e=e))
 
     # --- Clip List with Checkboxes ---
-    st.write("Select clips to process for face recognition:")
+    st.write(t("select_clips_for_face_recognition_label"))
     for uri in gcs_clips:
         is_selected = st.checkbox(
             os.path.basename(uri),
@@ -92,76 +94,74 @@ def render_tab4():
         )
         st.session_state.clip_selection[uri] = is_selected
 
+    st.divider()
+    st.subheader(t("refine_by_cast_subheader"))
+    
+    # Initialize session state for cast photos if it doesn't exist
+    if 'uploaded_cast_photo_uris' not in st.session_state:
+        st.session_state.uploaded_cast_photo_uris = []
 
-    # --- Cast Photo Uploader ---
     uploaded_cast_photos = st.file_uploader(
-        "Upload photos of cast members (one face per photo)",
+        t("upload_cast_photos_label"),
         accept_multiple_files=True,
-        type=['.jpg', '.jpeg', '.png'],
-        key="frs_uploader"
+        type=['jpg', 'jpeg', 'png'],
+        key="cast_photos_uploader"
     )
 
-    if st.button("✨ Refine Clips by Cast", key="refine_clip_by_face_button"):
+    if uploaded_cast_photos:
+        st.session_state.uploaded_cast_photo_uris = []
+        for photo in uploaded_cast_photos:
+            try:
+                files = {
+                    "photo_file": (photo.name, photo.getvalue(), photo.type)
+                }
+                data = {
+                    "workspace": workspace,
+                    "gcs_bucket": gcs_bucket_name
+                }
+                api_url = f"{st.session_state.API_BASE_URL}/upload-cast-photo"
+
+                response = requests.post(api_url, data=data, files=files)
+                response.raise_for_status()
+                
+                data = response.json()
+                st.info(f"DEBUG: API Response for {photo.name}: {data}") # Temporary logging
+                gcs_blob_name = data.get("gcs_blob_name")
+                st.session_state.uploaded_cast_photo_uris.append(gcs_blob_name)
+                st.success(f"Successfully uploaded {photo.name}")
+
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to upload {photo.name}: {e.response.text if e.response else e}")
+
+    if st.button(t("refine_clips_by_cast_button"), key="refine_clip_by_face_button"):
         selected_clips = [uri for uri, selected in st.session_state.clip_selection.items() if selected]
 
         if not selected_clips:
-            st.warning("Please select at least one clip to process.")
+            st.warning(t("select_one_clip_warning"))
+        elif not st.session_state.uploaded_cast_photo_uris:
+            st.warning(t("upload_one_cast_photo_warning"))
             return
-        if not uploaded_cast_photos:
-            st.warning("Please upload at least one photo of a cast member.")
-            return
-
-        # 1. Upload cast photos to a temporary location in GCS
-        cast_photo_uris = []
-        temp_photo_prefix = os.path.join(workspace, "temp_cast_photos/")
         
-        for uploaded_file in uploaded_cast_photos:
-            try:
-                upload_url = f"{st.session_state.API_BASE_URL}/upload-cast-photo/"
-                files = {'photo_file': (uploaded_file.name, uploaded_file, uploaded_file.type)}
-                params = {
-                    "gcs_bucket": gcs_bucket_name,
-                    "workspace": workspace
-                }
-                
-                response = requests.post(upload_url, files=files, params=params)
-                response.raise_for_status()
-                gcs_blob_name = response.json().get("gcs_blob_name")
-                cast_photo_uris.append(f"gs://{gcs_bucket_name}/{gcs_blob_name}")
-                st.info(f"Uploaded cast photo: {gcs_blob_name}")
-
-            except requests.exceptions.RequestException as e:
-                st.error(f"Failed to upload {uploaded_file.name}. Error: {e.response.text if e.response else e}")
-                return
-
-        # 2. Start the face recognition job for each selected clip
-        
-        # For now, we trigger jobs one by one.
-        # A better approach for the future would be to have a backend endpoint
-        # that accepts a list of clips to process in a single batch job.
-        
+        # Start the face detection and copy job for each selected clip
         st.session_state.refine_jobs = []
-        
         for clip_uri in selected_clips:
             try:
-                api_url = f"{st.session_state.API_BASE_URL}/generate-clips-by-face/"
+                api_url = f"{st.session_state.API_BASE_URL}/detect-faces-and-copy/"
                 payload = {
                     "workspace": workspace,
                     "gcs_bucket": gcs_bucket_name,
                     "gcs_video_uri": clip_uri,
-                    "gcs_cast_photo_uris": cast_photo_uris,
-                    "output_gcs_prefix": os.path.join(workspace, "refined_clips/")
+                    "output_gcs_prefix": os.path.join(workspace, "refined_clips/"),
+                    "gcs_cast_photo_uris": st.session_state.uploaded_cast_photo_uris
                 }
                 response = requests.post(api_url, json=payload)
                 response.raise_for_status()
-                
                 data = response.json()
                 job_id = data.get("job_id")
                 st.session_state.refine_jobs.append({"job_id": job_id, "clip": os.path.basename(clip_uri), "status": "pending"})
-                st.success(f"Backend job for '{os.path.basename(clip_uri)}' started! Job ID: {job_id}")
-
+                st.success(t("backend_job_start_success").format(job_id=job_id))
             except requests.exceptions.RequestException as e:
-                st.error(f"Failed to start face recognition job for {os.path.basename(clip_uri)}. API error: {e.response.text if e.response else e}")
+                st.error(t("face_recognition_job_start_error").format(filename=os.path.basename(clip_uri), error=e.response.text if e.response else e))
         
         if st.session_state.refine_jobs:
             st.rerun()

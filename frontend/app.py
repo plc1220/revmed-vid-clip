@@ -14,10 +14,23 @@ from tabs.tab4_refine_clips import render_tab4
 from tabs.tab5_video_joining import render_tab5
 from tabs.tab6_final_result import show as render_tab6
 from config import load_config
+from localization import LANGUAGES, load_translation, get_translator
 
 # --- App Configuration ---
 st.set_page_config(layout="wide")
-st.title("🎬 Rev-Media Video Assistant")
+# --- Language Selection ---
+selected_language = st.sidebar.selectbox(
+    "Language",
+    options=list(LANGUAGES.keys()),
+    index=0,  # Default to English
+)
+
+# Load translations
+st.session_state.selected_language = selected_language
+st.session_state.translations = load_translation(selected_language)
+t = get_translator()
+
+st.title(t("app_title"))
 
 # --- Global Configuration and Session State Initialization ---
 load_config()
@@ -30,23 +43,23 @@ if "workspace" not in st.session_state:
 def render_main_app():
     """Renders the main application tabs."""
     col_1, col_2, col_3 = st.columns([4, 1, 1])
-    col_1.header(f"Workspace: `{st.session_state.workspace}`")
+    col_1.header(t("workspace_header").format(workspace=st.session_state.workspace))
 
-    if col_2.button("Switch Workspace", use_container_width=True, icon=":material/arrow_back:"):
+    if col_2.button(t("switch_workspace_button"), use_container_width=True, icon=":material/arrow_back:"):
         st.session_state.workspace = None
         st.rerun()
 
-    if col_3.button("Refresh", use_container_width=True, icon=":material/refresh:"):
+    if col_3.button(t("refresh_button"), use_container_width=True, icon=":material/refresh:"):
         st.rerun()
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
-            "1: Video Split",
-            "2: Metadata Generation",
-            "3: Clip Generation",
-            "4: Refine Clips by Cast",
-            "5: Video Joining",
-            "6: Final Result",
+            t("tab1_title"),
+            t("tab2_title"),
+            t("tab3_title"),
+            t("tab4_title"),
+            t("tab5_title"),
+            t("tab6_title"),
         ]
     )
 
@@ -74,7 +87,7 @@ def render_main_app():
 
 def render_workspace_management():
     """Renders the workspace selection and creation UI."""
-    st.header("Select or Create a Workspace")
+    st.header(t("workspace_management_header"))
 
     api_url = st.session_state.API_BASE_URL
     bucket_name = st.session_state.GCS_BUCKET_NAME
@@ -86,28 +99,28 @@ def render_workspace_management():
         workspaces = response.json().get("workspaces", [])
 
         # Workspace Selector
-        selected_workspace = st.selectbox("Select a workspace:", options=workspaces)
+        selected_workspace = st.selectbox(t("select_workspace_label"), options=workspaces)
 
-        if st.button("Enter Workspace"):
+        if st.button(t("enter_workspace_button")):
             if selected_workspace:
                 st.session_state.workspace = selected_workspace
                 st.rerun()
             else:
-                st.warning("Please select a workspace.")
+                st.warning(t("select_workspace_warning"))
 
     except requests.exceptions.RequestException as e:
         st.error(
-            f"Could not connect to the backend API to fetch workspaces. Please ensure the API is running. Error: {e}"
+            t("backend_connection_error").format(e=e)
         )
         st.stop()
 
     st.markdown("---")
 
     # Workspace Creator
-    st.subheader("Or, Create a New Workspace")
-    new_workspace_name = st.text_input("New workspace name:")
+    st.subheader(t("create_workspace_subheader"))
+    new_workspace_name = st.text_input(t("new_workspace_label"))
 
-    if st.button("Create and Enter Workspace"):
+    if st.button(t("create_enter_workspace_button")):
         if new_workspace_name:
             try:
                 response = requests.post(
@@ -115,12 +128,12 @@ def render_workspace_management():
                 )
                 response.raise_for_status()
                 st.session_state.workspace = new_workspace_name
-                st.success(f"Workspace '{new_workspace_name}' created successfully!")
+                st.success(t("workspace_creation_success").format(workspace_name=new_workspace_name))
                 st.rerun()
             except requests.exceptions.RequestException as e:
-                st.error(f"Failed to create workspace. Error: {e.response.text if e.response else e}")
+                st.error(t("workspace_creation_error").format(e=e.response.text if e.response else e))
         else:
-            st.warning("Please enter a name for the new workspace.")
+            st.warning(t("enter_workspace_name_warning"))
 
 # --- Main App Logic ---
 if not st.session_state.workspace:

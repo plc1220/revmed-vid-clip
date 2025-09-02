@@ -15,17 +15,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
-COPY requirements.txt .
+COPY face_recognition_microservice/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code
-COPY . .
+# Copy the application code and shared gcs_service
+COPY face_recognition_microservice/main.py .
+COPY gcs_service.py .
 
-# Expose the port the app will run on
-EXPOSE 8080
-
-# Set the default port to 8001 for local development
-ENV PORT=8001
-
-# Command to run the application
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT
+# Command to run the job
+CMD ["python", "main.py"]

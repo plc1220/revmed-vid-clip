@@ -2,10 +2,11 @@ import json
 import os
 import uuid
 import shutil
+import logging
 
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Form, UploadFile, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Form, UploadFile, Query, File
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import schemas
@@ -27,9 +28,6 @@ load_dotenv()
 # Import services
 from logging_config import setup_logging
 import gcs_service
-import video_service
-import ai_service
-import requests
 import task_service
 
 # Setup logging
@@ -277,14 +275,14 @@ async def upload_video_endpoint(
             shutil.rmtree(temp_dir)
 
 
-@app.post("/upload-cast-photo/", tags=["Video Processing"], response_model=UploadResponse)
+@app.post("/upload-cast-photo", tags=["Video Processing"], response_model=UploadResponse)
 async def upload_cast_photo_endpoint(
-    photo_file: UploadFile,
-    workspace: str = Query(...),
-    gcs_bucket: str = Query(...),
+    workspace: str = Form(...),
+    gcs_bucket: str = Form(...),
+    photo_file: UploadFile = File(...),
 ):
     """
-    Handles direct cast photo uploads to the server, then to GCS.
+    Handles cast photo uploads to the server, then to GCS.
     """
     upload_id = str(uuid.uuid4())
     temp_dir = os.path.join(TEMP_STORAGE_PATH, "uploads", upload_id)
@@ -295,7 +293,7 @@ async def upload_cast_photo_endpoint(
         with open(local_photo_path, "wb") as buffer:
             shutil.copyfileobj(photo_file.file, buffer)
 
-        gcs_blob_name = os.path.join(workspace, "temp_cast_photos", photo_file.filename)
+        gcs_blob_name = os.path.join(workspace, "cast_photos", photo_file.filename)
 
         success, error = gcs_service.upload_gcs_blob(gcs_bucket, local_photo_path, gcs_blob_name)
         if not success:
@@ -319,6 +317,7 @@ async def upload_cast_photo_endpoint(
 @app.post("/split-video/", tags=["Video Processing"], status_code=202)
 async def split_video_endpoint(request: SplitRequest, background_tasks: BackgroundTasks):
     return _queue_background_job(background_tasks, task_service.process_splitting, request)
+
 @app.post("/join-videos/", tags=["Video Processing"], status_code=202)
 async def join_videos_endpoint(request: JoinRequest, background_tasks: BackgroundTasks):
     """
@@ -326,7 +325,6 @@ async def join_videos_endpoint(request: JoinRequest, background_tasks: Backgroun
     The transformation logic is now handled within the background task itself.
     """
     return _queue_background_job(background_tasks, task_service.process_joining, request)
-
 
 @app.delete("/delete-gcs-blob/", tags=["GCS"], status_code=200)
 async def delete_gcs_blob_endpoint(request: GCSDeleteRequest):
@@ -339,7 +337,6 @@ async def delete_gcs_blob_endpoint(request: GCSDeleteRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/gcs/delete-batch", tags=["GCS"], status_code=200)
 async def delete_gcs_blob_batch_endpoint(request: GCSBatchDeleteRequest):
     """Deletes multiple blobs from GCS in a single batch."""
@@ -350,7 +347,6 @@ async def delete_gcs_blob_batch_endpoint(request: GCSBatchDeleteRequest):
         return {"message": f"Batch deletion successful for bucket '{request.gcs_bucket}'."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/gcs/signed-url", tags=["GCS"])
 async def get_signed_url_endpoint(gcs_bucket: str = Query(None), blob_name: str = Query(None)):
@@ -407,3 +403,7 @@ async def generate_clips_endpoint(request: ClipGenerationRequest, background_tas
 @app.post("/generate-clips-by-face/", tags=["Video Processing"], status_code=202)
 async def generate_clips_by_face_endpoint(request: FaceClipGenerationRequest, background_tasks: BackgroundTasks):
     return _queue_background_job(background_tasks, task_service.process_face_clip_generation, request)
+
+@app.post("/detect-faces-and-copy/", tags=["Video Processing"], status_code=202)
+async def detect_faces_and_copy_endpoint(request: FaceClipGenerationRequest, background_tasks: BackgroundTasks):
+    return _queue_background_job(background_tasks, task_service.process_face_detection_and_copy, request)

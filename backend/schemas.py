@@ -47,6 +47,7 @@ class MetadataRequest(BaseModel):
     prompt_template: str
     ai_model_name: str
     gcs_output_prefix: str
+    language: Optional[str] = None
 
 
 class ClipGenerationRequest(BaseModel):
