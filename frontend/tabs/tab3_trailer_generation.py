@@ -1,26 +1,30 @@
 import streamlit as st
 import os
-import re
-import json
 import requests
-import time
 import pandas as pd
-from typing import Optional
 from utils import poll_job_status
 from localization import get_translator
 
 # Define the base URL for the backend API
 
-@st.cache_data
 def load_metadata_content(gcs_bucket_name, gcs_blob_name):
     """Downloads and parses a metadata JSON file from GCS, with caching."""
+    # Use session_state for manual caching
+    if "metadata_cache" not in st.session_state:
+        st.session_state.metadata_cache = {}
+
+    if gcs_blob_name in st.session_state.metadata_cache:
+        return st.session_state.metadata_cache[gcs_blob_name]
+
     try:
-       # The new endpoint includes the blob name in the path, which avoids encoding issues.
-       api_url = f"{st.session_state.API_BASE_URL}/gcs/download/{gcs_blob_name}"
-       params = {"gcs_bucket": gcs_bucket_name}
-       response = requests.get(api_url, params=params)
-       response.raise_for_status()
-       return response.json()
+        # The new endpoint includes the blob name in the path, which avoids encoding issues.
+        api_url = f"{st.session_state.API_BASE_URL}/gcs/download/{gcs_blob_name}"
+        params = {"gcs_bucket": gcs_bucket_name}
+        response = requests.get(api_url, params=params)
+        response.raise_for_status()
+        content = response.json()
+        st.session_state.metadata_cache[gcs_blob_name] = content
+        return content
     except requests.exceptions.RequestException as e:
         raise Exception(f"Failed to download {gcs_blob_name}. Error: {e}")
 
@@ -55,7 +59,6 @@ def render_tab3():
             response.raise_for_status()
             gcs_metadata_files = response.json().get("files", [])
         except requests.exceptions.RequestException as e:
-            # st.error(t("list_metadata_files_error").format(e=e))
             gcs_metadata_files = []
 
     if not gcs_metadata_files:
@@ -101,7 +104,12 @@ def render_tab3():
 
                     if deleted_files:
                         st.success(t("delete_metadata_success").format(count=len(deleted_files)))
-                        load_metadata_content.clear()
+                        # Clear relevant entries from the manual cache
+                        if "metadata_cache" in st.session_state:
+                            for uri in deleted_files:
+                                if uri in st.session_state.metadata_cache:
+                                    del st.session_state.metadata_cache[uri]
+                        
                         # Unselect deleted files
                         for uri in deleted_files:
                             if uri in st.session_state.metadata_selection:
@@ -142,8 +150,9 @@ def render_tab3():
                         response = requests.delete(api_url, json=payload)
                         response.raise_for_status()
                         st.success(t("delete_metadata_file_success").format(filename=file_basename))
-                        # Clear the cache for the deleted file to ensure it's re-fetched if re-uploaded
-                        load_metadata_content.clear()
+                        # Clear the specific entry from the manual cache
+                        if "metadata_cache" in st.session_state and uri in st.session_state.metadata_cache:
+                            del st.session_state.metadata_cache[uri]
                         st.rerun()
                     except requests.exceptions.RequestException as e:
                         st.error(t("delete_metadata_file_error").format(filename=file_basename, e=e))

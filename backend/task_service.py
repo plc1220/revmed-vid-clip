@@ -367,6 +367,7 @@ async def process_metadata_generation(job_id: str, request: MetadataRequest):
 
             prompt = request.prompt_template.replace("{{source_filename}}", video_basename)
             prompt = prompt.replace("{{actual_video_duration}}", duration_str)
+            prompt = prompt.replace("{{language}}", request.language)
 
             metadata_json_str, error = await ai_service.generate_content_async(prompt, gcs_uri, request.ai_model_name)
 

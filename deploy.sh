@@ -51,15 +51,15 @@ else
 fi
 
 # Deploy backend service
-#info "Deploying backend service..."
-#(cd backend && gcloud builds submit --config cloudbuild.yaml --project="$PROJECT_ID" --quiet)
+info "Deploying backend service..."
+(cd backend && gcloud builds submit --config cloudbuild.yaml --project="$PROJECT_ID" --quiet)
 
 # # Deploy face recognition service
 # info "Deploying face recognition service..."
 # gcloud builds submit --config backend/face_recognition_microservice/cloudbuild.yaml . --project="$PROJECT_ID" --quiet
 
 # Deploy frontend service
-info "Deploying frontend service..."
-(cd frontend && gcloud builds submit --config cloudbuild.yaml --project="$PROJECT_ID" --quiet)
+#info "Deploying frontend service..."
+#(cd frontend && gcloud builds submit --config cloudbuild.yaml --project="$PROJECT_ID" --quiet)
 
 info "✅ All services deployed successfully!"
