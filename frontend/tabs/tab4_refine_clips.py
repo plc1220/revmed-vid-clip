@@ -22,7 +22,6 @@ def render_tab4():
         response.raise_for_status()
         gcs_clips = response.json().get("files", [])
     except requests.exceptions.RequestException as e:
-        # st.error(t("list_clips_error").format(e=e))
         gcs_clips = []
 
     if not gcs_clips:
@@ -125,7 +124,6 @@ def render_tab4():
                 response.raise_for_status()
                 
                 data = response.json()
-                st.info(f"DEBUG: API Response for {photo.name}: {data}") # Temporary logging
                 gcs_blob_name = data.get("gcs_blob_name")
                 st.session_state.uploaded_cast_photo_uris.append(gcs_blob_name)
                 st.success(f"Successfully uploaded {photo.name}")
