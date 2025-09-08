@@ -1,8 +1,8 @@
 steps:
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/backend', '.']
+  args: ['build', '-t', '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/backend', '.']
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/backend']
+  args: ['push', '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/backend']
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: gcloud
   args:
@@ -10,11 +10,13 @@ steps:
   - 'deploy'
   - 'backend'
   - '--image'
-  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/backend'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/backend'
   - '--region'
-  - 'asia-southeast1'
+  - '${_REGION}'
+  - '--service-account'
+  - '${_SERVICE_ACCOUNT_EMAIL}'
   - '--set-env-vars'
-  - '^##^FACE_RECOGNITION_QUEUE=face-recognition-queue##FACE_RECOGNITION_JOB_URL=https://asia-southeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/933484080059/jobs/face-recognition-job:run##CLOUD_TASKS_SERVICE_ACCOUNT=933484080059-compute@developer.gserviceaccount.com##GOOGLE_CLOUD_PROJECT=my-rd-coe-demo-data##GOOGLE_CLOUD_LOCATION=asia-southeast1'
+  - 'FACE_RECOGNITION_QUEUE=${_QUEUE_NAME},FACE_RECOGNITION_JOB_URL=${_FACE_RECOGNITION_JOB_URL},CLOUD_TASKS_SERVICE_ACCOUNT=${_SERVICE_ACCOUNT_EMAIL},GOOGLE_CLOUD_PROJECT=${_PROJECT_ID},GOOGLE_CLOUD_LOCATION=${_REGION}'
   - '--memory'
   - '8Gi'
   - '--cpu'
@@ -23,4 +25,4 @@ steps:
   - 'managed'
   - '--allow-unauthenticated'
 images:
-- 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/backend'
+- '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/backend'

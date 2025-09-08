@@ -1,18 +1,17 @@
 steps:
 # Build the container image
 - name: 'gcr.io/cloud-builders/docker'
-  dir: 'backend' # Set the working directory to the backend folder
   args:
   - 'build'
   - '-t'
-  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/face-recognition-job'
   - '-f'
   - 'face_recognition_microservice/Dockerfile'
-  - '.' # Build context is now the 'backend' directory
+  - '.'
 
 # Push the container image
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['push', 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job']
+  args: ['push', '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/face-recognition-job']
 
 # Deploy as a Cloud Run Job (create if missing, update if exists)
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -21,11 +20,12 @@ steps:
     - -c
     - |
       set -e
-      if gcloud beta run jobs describe face-recognition-job --region asia-southeast1 >/dev/null 2>&1; then
+      if gcloud beta run jobs describe face-recognition-job --region ${_REGION} >/dev/null 2>&1; then
         echo "Updating existing job..."
         gcloud beta run jobs update face-recognition-job \
-          --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job \
-          --region asia-southeast1 \
+          --image ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/face-recognition-job \
+          --region ${_REGION} \
+          --service-account ${_SERVICE_ACCOUNT_EMAIL} \
           --cpu 4 \
           --memory 16Gi \
           --tasks 1 \
@@ -33,8 +33,9 @@ steps:
       else
         echo "Creating new job..."
         gcloud beta run jobs create face-recognition-job \
-          --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job \
-          --region asia-southeast1 \
+          --image ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/face-recognition-job \
+          --region ${_REGION} \
+          --service-account ${_SERVICE_ACCOUNT_EMAIL} \
           --cpu 4 \
           --memory 16Gi \
           --tasks 1 \
@@ -42,4 +43,4 @@ steps:
       fi
 
 images:
-- 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/revmed-app/face-recognition-job'
+- '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPO_NAME}/face-recognition-job'
