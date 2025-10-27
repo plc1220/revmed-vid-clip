@@ -556,12 +556,13 @@ def process_clip_generation(job_id: str, request: ClipGenerationRequest):
                     start_str, end_str = time_range.split(" - ")
                     start_secs = sum(x * int(t) for x, t in zip([3600, 60, 1], start_str.split(":")))
                     end_secs = sum(x * int(t) for x, t in zip([3600, 60, 1], end_str.split(":")))
+                    clip_duration = end_secs - start_secs
                 except (ValueError, AttributeError):
                     logging.warning(f"Job {job_id}: Invalid time format '{time_range}'. Skipping clip.")
                     continue
 
                 processed_clips_count += 1
-                clip_filename = f"{os.path.splitext(os.path.basename(source_blob_name))[0]}_clip_{processed_clips_count}.mp4"
+                clip_filename = f"{os.path.splitext(os.path.basename(source_blob_name))[0]}_clip_{processed_clips_count}_{clip_duration:.3f}s.mp4"
 
                 edit_atom = transcoder_v1.types.EditAtom(
                     key=f"atom-clip-{processed_clips_count}",
