@@ -25,8 +25,8 @@ except Exception as e:
 # --- API Call Logic ---
 
 @retry(
-    wait=wait_exponential(multiplier=1, min=2, max=60),
-    stop=stop_after_attempt(3)
+    wait=wait_exponential(multiplier=1, min=5, max=60),
+    stop=stop_after_attempt(5)
 )
 async def generate_content_async(prompt: str, gcs_video_uri: str, model_name: str) -> Tuple[str, str]:
     """
@@ -58,7 +58,7 @@ async def generate_content_async(prompt: str, gcs_video_uri: str, model_name: st
         config = types.GenerateContentConfig(
             temperature=1.0,
             top_p=1.0,
-            max_output_tokens=8192,
+            max_output_tokens=10000,
             response_mime_type="application/json",
             response_schema=response_schema_for_list,
             safety_settings=[

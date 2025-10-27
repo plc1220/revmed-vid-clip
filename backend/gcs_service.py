@@ -274,9 +274,19 @@ def generate_signed_url(
     Generates a signed URL for a GCS blob for GET (download) or PUT (upload).
     """
     try:
-        # Use the centralized client which should be initialized with a service account
-        credentials, project_id = google.auth.default()
-        credentials.refresh(google.auth.transport.requests.Request())
+        # Load service account credentials directly
+        credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if credentials_path:
+            from google.oauth2 import service_account
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+        else:
+            # Use the centralized client which should be initialized with a service account
+            credentials, project_id = google.auth.default()
+            credentials.refresh(google.auth.transport.requests.Request())
+        
         storage_client = get_storage_client()
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
@@ -285,7 +295,6 @@ def generate_signed_url(
         expiration_time = datetime.timedelta(hours=1)
 
         # Generate the signed URL
-        # The client's credentials (from GOOGLE_APPLICATION_CREDENTIALS) will be used automatically.
         signed_url = blob.generate_signed_url(
             version="v4",
             expiration=expiration_time,
