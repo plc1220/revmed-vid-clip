@@ -20,6 +20,24 @@ def calculate_total_duration(selected_clips):
         return 0
     return sum(clip.get('duration', 0) for clip in selected_clips)
 
+def toggle_clip(clip_info):
+    """Callback function to handle checkbox state changes"""
+    clip_name = clip_info['name']
+    # Check the actual checkbox state from session_state
+    checkbox_key = f"select_{clip_name}"
+    is_checked = st.session_state.get(checkbox_key, False)
+    
+    if is_checked:
+        # Add if not already in list
+        if clip_name not in [c['name'] for c in st.session_state.selected_clips_for_joining]:
+            st.session_state.selected_clips_for_joining.append(clip_info)
+    else:
+        # Remove if in list
+        st.session_state.selected_clips_for_joining = [
+            c for c in st.session_state.selected_clips_for_joining 
+            if c['name'] != clip_name
+        ]
+
 def extract_duration_from_blob_name(blob_name):
     """Extract duration from blob name using regex pattern _{clip_duration:.3f}s.mp4"""
     # Pattern to match _{duration}s.mp4 format
@@ -137,10 +155,16 @@ def render_tab5():
     with col1:
         if st.button(t("select_all_button"), key="select_all_clips_joining"):
             st.session_state.selected_clips_for_joining = clips_data.copy()
+            # Update all checkbox states
+            for clip in clips_data:
+                st.session_state[f"select_{clip['name']}"] = True
             st.rerun()
     with col2:
         if st.button(t("deselect_all_button"), key="deselect_all_clips_joining"):
             st.session_state.selected_clips_for_joining = []
+            # Update all checkbox states
+            for clip in clips_data:
+                st.session_state[f"select_{clip['name']}"] = False
             st.rerun()
     with col3:
         if st.button(t("delete_selected_button"), key="delete_selected_clips_joining"):
@@ -163,27 +187,30 @@ def render_tab5():
                 else:
                     st.success(t("delete_all_selected_clips_success"))
                 
+                # Clear checkbox states for deleted clips before clearing the selection
+                for clip in st.session_state.selected_clips_for_joining:
+                    checkbox_key = f"select_{clip['name']}"
+                    if checkbox_key in st.session_state:
+                        st.session_state[checkbox_key] = False
+                
                 st.session_state.selected_clips_for_joining = []
                 st.rerun()
 
     num_columns = st.slider(t("columns_for_display_slider"), 1, 5, 3)
     cols = st.columns(num_columns)
     
-    currently_selected_names = [c['name'] for c in st.session_state.selected_clips_for_joining]
-    
     for i, clip_info in enumerate(clips_data):
         with cols[i % num_columns]:
             st.video(clip_info["url"])
-            is_selected = clip_info['name'] in currently_selected_names
 
             c1, c2 = st.columns([0.8, 0.2])
             with c1:
-                if st.checkbox(t("select_checkbox").format(filename=clip_info['filename']), value=is_selected, key=f"select_{clip_info['name']}"):
-                    if not is_selected:
-                        st.session_state.selected_clips_for_joining.append(clip_info)
-                else:
-                    if is_selected:
-                        st.session_state.selected_clips_for_joining = [c for c in st.session_state.selected_clips_for_joining if c['name'] != clip_info['name']]
+                st.checkbox(
+                    t("select_checkbox").format(filename=clip_info['filename']),
+                    key=f"select_{clip_info['name']}",
+                    on_change=toggle_clip,
+                    args=(clip_info,)
+                )
             with c2:
                 if st.button("🗑️", key=f"delete_clip_{clip_info['name']}", help=t("delete_clip_button_help").format(filename=clip_info['filename'])):
                     try:
@@ -196,6 +223,10 @@ def render_tab5():
                         response.raise_for_status()
                         # Also remove from selection if it was selected
                         st.session_state.selected_clips_for_joining = [c for c in st.session_state.selected_clips_for_joining if c['name'] != clip_info['name']]
+                        # Update checkbox state
+                        checkbox_key = f"select_{clip_info['name']}"
+                        if checkbox_key in st.session_state:
+                            st.session_state[checkbox_key] = False
                         st.success(t("delete_single_clip_success").format(filename=clip_info['filename']))
                         st.rerun()
                     except requests.exceptions.RequestException as e:
