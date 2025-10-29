@@ -45,35 +45,35 @@ def delete_gcs_videos_via_api(bucket_name, blob_names):
         st.error(f"Error deleting GCS videos via API: {e}")
         return None
 
-def show():
-    t = get_translator()
-    st.title(t("final_result_title"))
-    st.header(t("joined_clips_header"))
 
-    workspace = st.session_state.workspace
-    gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
-    joined_clips_prefix = os.path.join(workspace, "joined_clips/")
+t = get_translator()
+# st.title(t("final_result_title"))
+# st.header(t("joined_clips_header"))
 
-    videos = list_gcs_videos_via_api(gcs_bucket_name, joined_clips_prefix)
+workspace = st.session_state.workspace
+gcs_bucket_name = st.session_state.GCS_BUCKET_NAME
+joined_clips_prefix = os.path.join(workspace, "joined_clips/")
 
-    if videos:
-        selected_videos = []
-        for i, video in enumerate(videos):
-            col1, col2 = st.columns([0.1, 0.9])
-            with col1:
-                # Use a safer key based on the index to avoid issues with special characters in blob_name
-                if st.checkbox("", key=f"final_video_{i}"):
-                    selected_videos.append(video["blob_name"])
-            with col2:
-                st.video(video["url"])
+videos = list_gcs_videos_via_api(gcs_bucket_name, joined_clips_prefix)
 
-        if selected_videos:
-            if st.button(t("delete_selected_button")):
-                with st.spinner(t("deleting_videos_spinner")):
-                    result = delete_gcs_videos_via_api(gcs_bucket_name, selected_videos)
-                    if result:
-                        st.success(t("delete_videos_success"))
-                    else:
-                        st.error(t("delete_videos_error"))
-    else:
-        st.info(t("no_joined_clips_info"))
+if videos:
+    selected_videos = []
+    for i, video in enumerate(videos):
+        col1, col2 = st.columns([0.1, 0.9])
+        with col1:
+            # Use a safer key based on the index to avoid issues with special characters in blob_name
+            if st.checkbox("", key=f"final_video_{i}"):
+                selected_videos.append(video["blob_name"])
+        with col2:
+            st.video(video["url"])
+
+    if selected_videos:
+        if st.button(t("delete_selected_button")):
+            with st.spinner(t("deleting_videos_spinner")):
+                result = delete_gcs_videos_via_api(gcs_bucket_name, selected_videos)
+                if result:
+                    st.success(t("delete_videos_success"))
+                else:
+                    st.error(t("delete_videos_error"))
+else:
+    st.info(t("no_joined_clips_info"))
